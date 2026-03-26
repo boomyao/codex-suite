@@ -1,0 +1,14 @@
+.DS_Store
+*.log
+
+apps/mobile/node_modules/
+apps/mobile/.expo/
+apps/mobile/dist/
+apps/mobile/web-build/
+apps/mobile/ios/
+apps/mobile/android/
+apps/mobile/tmp/
+apps/mobile/expo-env.d.ts
+
+apps/bridge/codex-bridge
+apps/bridge/tmp-go-config.json
