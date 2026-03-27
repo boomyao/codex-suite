@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "0.117.0-rt1",
+  "patchSchemaVersion": 1,
+  "platforms": {
+    "darwin-arm64": {
+      "upstreamRelease": {
+        "repo": "openai/codex",
+        "tag": "rust-v0.117.0"
+      },
+      "desktopWebview": {
+        "source": "github-release-dmg",
+        "version": "0.117.0",
+        "asset": "codex-aarch64-apple-darwin.dmg"
+      },
+      "appServer": {
+        "source": "github-release-tarball",
+        "version": "0.117.0",
+        "asset": "codex-aarch64-apple-darwin.tar.gz"
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+name: Bridge Runtime Update Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  check-runtime-updates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check upstream runtime release
+        id: runtime_check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts
+          set +e
+          node apps/bridge/scripts/check_runtime_updates.mjs \
+            --lock apps/bridge/release/runtime-lock.json > .artifacts/runtime-update-summary.json
+          status=$?
+          set -e
+          cat .artifacts/runtime-update-summary.json
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Runtime Update Check"
+            echo
+            echo '```json'
+            cat .artifacts/runtime-update-summary.json
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          exit 0
+
+      - name: Upload runtime update summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-update-summary
+          path: .artifacts/runtime-update-summary.json
+
+      - name: Fail when runtime lock is outdated
+        if: steps.runtime_check.outputs.status != '0'
+        run: |
+          echo "runtime-lock.json is behind the latest openai/codex release" >&2
+          exit 1

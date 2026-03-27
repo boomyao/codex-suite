@@ -248,18 +248,56 @@ func buildMobilePreloadScript() string {
   var themeListeners = [];
   var ENABLED_STATSIG_GATES = { "1609556872": true };
   var directRpcMethods = [
+    "active-workspace-roots",
     "account/read",
     "account/rateLimits/read",
+    "account-info",
     "app/list",
+    "codex-home",
     "collaborationMode/list",
     "config/read",
+    "developer-instructions",
+    "extension-info",
+    "fast-mode-rollout-metrics",
+    "get-configuration",
+    "get-copilot-api-proxy-info",
+    "get-global-state",
+    "gh-cli-status",
+    "gh-pr-status",
+    "git-origins",
+    "has-custom-cli-executable",
+    "hotkey-window-hotkey-state",
+    "ide-context",
+    "inbox-items",
+    "is-copilot-api-available",
+    "list-automations",
+    "list-pending-automation-run-threads",
+    "list-pinned-threads",
+    "local-custom-agents",
+    "local-environments",
+    "locale-info",
     "mcpServerStatus/list",
+    "mcp-codex-config",
     "model/list",
+    "open-in-targets",
+    "os-info",
+    "paths-exist",
+    "recommended-skills",
+    "remote-workspace-directory-entries",
+    "set-configuration",
+    "set-global-state",
+    "set-pinned-threads-order",
+    "set-thread-pinned",
     "skills/list",
-    "thread/list"
+    "thread-terminal-snapshot",
+    "thread/list",
+    "workspace-root-options",
+    "worktree-shell-environment-config"
   ];
   var directRpcInflight = Object.create(null);
   var directRpcCache = Object.create(null);
+  var pendingBridgeRequests = Object.create(null);
+  var nextBridgeRequestNumber = 0;
 
   function cloneJson(value) {
     try { return JSON.parse(JSON.stringify(value)); } catch (error) {}
@@ -291,6 +329,31 @@ func buildMobilePreloadScript() string {
   }
 
   window.__codexMobileTrace = trace;
+
+  function allocateBridgeRequestId(prefix) {
+    nextBridgeRequestNumber += 1;
+    return String(prefix || "bridge") + "-" + String(nextBridgeRequestNumber);
+  }
+
+  function resolveBridgeRequest(requestId, result) {
+    if (!requestId) {
+      return;
+    }
+    var resolver = pendingBridgeRequests[requestId];
+    if (typeof resolver !== "function") {
+      return;
+    }
+    delete pendingBridgeRequests[requestId];
+    resolver(cloneJson(result ?? null));
+  }
+
+  function requestBridgeResult(kind, payload, prefix) {
+    var requestId = allocateBridgeRequestId(prefix);
+    return new Promise(function (resolve) {
+      pendingBridgeRequests[requestId] = resolve;
+      post(kind, Object.assign({ requestId: requestId }, payload || {}));
+    });
+  }
 
   function arrayRemove(values, target) {
     if (!Array.isArray(values)) { return; }
@@ -429,6 +492,213 @@ func buildMobilePreloadScript() string {
       window.visualViewport.addEventListener("scroll", schedulePageScrollReset, { passive: true });
       window.visualViewport.addEventListener("resize", schedulePageScrollReset, { passive: true });
     }
+  }
+
+  function resolveCssLengthPx(rawValue, fallbackPx) {
+    if (typeof rawValue !== "string") {
+      return fallbackPx;
+    }
+    var value = rawValue.trim();
+    if (!value) {
+      return fallbackPx;
+    }
+    if (/^-?\d+(\.\d+)?px$/.test(value)) {
+      return parseFloat(value);
+    }
+    try {
+      var probe = document.createElement("div");
+      probe.style.position = "fixed";
+      probe.style.visibility = "hidden";
+      probe.style.pointerEvents = "none";
+      probe.style.width = value;
+      probe.style.height = "0";
+      (document.body || document.documentElement).appendChild(probe);
+      var measured = probe.getBoundingClientRect().width;
+      if (probe.parentNode) {
+        probe.parentNode.removeChild(probe);
+      }
+      if (isFinite(measured) && measured > 0) {
+        return measured;
+      }
+    } catch (error) {}
+    return fallbackPx;
+  }
+
+  function installSidebarLongPressContextMenu() {
+    if (window.__codexMobileSidebarLongPressInstalled) {
+      return;
+    }
+    window.__codexMobileSidebarLongPressInstalled = true;
+    if (!(("ontouchstart" in window) || (navigator && navigator.maxTouchPoints > 0))) {
+      return;
+    }
+
+    var LONG_PRESS_MS = 450;
+    var MOVE_TOLERANCE_PX = 12;
+    var activeTouch = null;
+    var suppressClickUntil = 0;
+    var suppressNativeContextMenuUntil = 0;
+
+    function clearActiveTouch() {
+      if (activeTouch && activeTouch.timerId) {
+        window.clearTimeout(activeTouch.timerId);
+      }
+      activeTouch = null;
+    }
+
+    function getSidebarLongPressRegion() {
+      var root = document.documentElement;
+      var styles = window.getComputedStyle(root);
+      var safeAreaLeft = resolveCssLengthPx(styles.getPropertyValue("--safe-area-left"), 0);
+      var sidebarWidth = resolveCssLengthPx(styles.getPropertyValue("--spacing-token-sidebar"), 300);
+      if (!(sidebarWidth > 0)) {
+        sidebarWidth = resolveCssLengthPx(styles.getPropertyValue("--token-sidebar"), 300);
+      }
+      var toolbarHeight = resolveCssLengthPx(styles.getPropertyValue("--height-toolbar"), 0);
+      return {
+        left: safeAreaLeft,
+        right: safeAreaLeft + sidebarWidth,
+        top: toolbarHeight
+      };
+    }
+
+    function isPointInsideSidebar(clientX, clientY) {
+      var region = getSidebarLongPressRegion();
+      return clientX >= region.left && clientX <= region.right && clientY >= region.top;
+    }
+
+    function isEligibleLongPressTarget(target) {
+      if (!target || typeof target.closest !== "function") {
+        return false;
+      }
+      if (target.closest("input,textarea,select,option,[contenteditable=''],[contenteditable='true'],[role='textbox']")) {
+        return false;
+      }
+      return true;
+    }
+
+    function findTouchByIdentifier(touchList, identifier) {
+      if (!touchList) {
+        return null;
+      }
+      for (var index = 0; index < touchList.length; index += 1) {
+        if (touchList[index].identifier === identifier) {
+          return touchList[index];
+        }
+      }
+      return null;
+    }
+
+    function fireSidebarContextMenu() {
+      if (!activeTouch) {
+        return;
+      }
+      var pointX = activeTouch.clientX;
+      var pointY = activeTouch.clientY;
+      var target = document.elementFromPoint(pointX, pointY) || activeTouch.target || document.body;
+      suppressClickUntil = Date.now() + 700;
+      suppressNativeContextMenuUntil = Date.now() + 1200;
+      try {
+        target.dispatchEvent(new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: pointX,
+          clientY: pointY,
+          screenX: pointX,
+          screenY: pointY,
+          button: 2,
+          buttons: 2,
+          detail: 0
+        }));
+      } catch (error) {}
+      clearActiveTouch();
+    }
+
+    document.addEventListener("touchstart", function (event) {
+      if (!event.changedTouches || event.changedTouches.length !== 1 || (event.touches && event.touches.length !== 1)) {
+        clearActiveTouch();
+        return;
+      }
+      var touch = event.changedTouches[0];
+      if (!touch || !isPointInsideSidebar(touch.clientX, touch.clientY)) {
+        clearActiveTouch();
+        return;
+      }
+      var target = touch.target || event.target;
+      if (!isEligibleLongPressTarget(target)) {
+        clearActiveTouch();
+        return;
+      }
+      clearActiveTouch();
+      activeTouch = {
+        identifier: touch.identifier,
+        clientX: touch.clientX,
+        clientY: touch.clientY,
+        target: target,
+        timerId: window.setTimeout(fireSidebarContextMenu, LONG_PRESS_MS)
+      };
+    }, { capture: true, passive: true });
+
+    document.addEventListener("touchmove", function (event) {
+      if (!activeTouch) {
+        return;
+      }
+      var touch = findTouchByIdentifier(event.changedTouches, activeTouch.identifier) || findTouchByIdentifier(event.touches, activeTouch.identifier);
+      if (!touch) {
+        return;
+      }
+      var deltaX = touch.clientX - activeTouch.clientX;
+      var deltaY = touch.clientY - activeTouch.clientY;
+      if (!isPointInsideSidebar(touch.clientX, touch.clientY) || Math.sqrt(deltaX * deltaX + deltaY * deltaY) > MOVE_TOLERANCE_PX) {
+        clearActiveTouch();
+      }
+    }, { capture: true, passive: true });
+
+    document.addEventListener("touchend", function (event) {
+      if (Date.now() < suppressClickUntil) {
+        var completedTouch = event.changedTouches && event.changedTouches.length > 0 ? event.changedTouches[0] : null;
+        if (!completedTouch || isPointInsideSidebar(completedTouch.clientX, completedTouch.clientY)) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }
+      if (!activeTouch) {
+        return;
+      }
+      var touch = findTouchByIdentifier(event.changedTouches, activeTouch.identifier);
+      if (!touch) {
+        return;
+      }
+      clearActiveTouch();
+    }, { capture: true, passive: false });
+
+    document.addEventListener("touchcancel", function () {
+      clearActiveTouch();
+    }, { capture: true, passive: true });
+
+    document.addEventListener("contextmenu", function (event) {
+      if (Date.now() >= suppressNativeContextMenuUntil || !event.isTrusted) {
+        return;
+      }
+      if (isPointInsideSidebar(event.clientX, event.clientY)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+
+    document.addEventListener("click", function (event) {
+      if (Date.now() >= suppressClickUntil) {
+        return;
+      }
+      if (isPointInsideSidebar(event.clientX, event.clientY)) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, true);
+
+    window.addEventListener("blur", clearActiveTouch, true);
+    document.addEventListener("scroll", clearActiveTouch, true);
   }
 
   function getDirectRpcCacheKey(method, params) {
@@ -640,15 +910,172 @@ func buildMobilePreloadScript() string {
     }
   }
 
+  function isCodexProtocolUrl(url) {
+    if (typeof url !== "string" || url.length === 0) {
+      return false;
+    }
+    try {
+      var parsed = new URL(url, window.location.href);
+      return parsed.protocol === "vscode:" && parsed.hostname === "codex";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function isSentryIpcUrl(url) {
+    if (typeof url !== "string" || url.length === 0) {
+      return false;
+    }
+    try {
+      return new URL(url, window.location.href).protocol === "sentry-ipc:";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function parseRequestUrl(url) {
+    if (typeof url !== "string" || url.length === 0) {
+      return null;
+    }
+    try {
+      return new URL(url, window.location.href);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function normalizeRequestPathname(pathname) {
+    if (typeof pathname !== "string" || pathname.length === 0) {
+      return "/";
+    }
+    return pathname.replace(/\/{2,}/g, "/");
+  }
+
+  function isExternalConnectorDirectoryUrl(url) {
+    var parsed = parseRequestUrl(url);
+    if (!parsed || parsed.origin === window.location.origin) {
+      return false;
+    }
+    var hostname = String(parsed.hostname || "").toLowerCase();
+    if (hostname !== "chatgpt.com" && hostname !== "openai.com" && !hostname.endsWith(".chatgpt.com") && !hostname.endsWith(".openai.com")) {
+      return false;
+    }
+    var pathname = normalizeRequestPathname(parsed.pathname || "/");
+    if (pathname.indexOf("/backend-api/") !== 0 && pathname.indexOf("/aip/") !== 0) {
+      return false;
+    }
+    return pathname.indexOf("/connectors/") >= 0 || pathname.indexOf("/app_connectors/") >= 0;
+  }
+
+  function buildEmptyConnectorDirectoryPayload(url) {
+    var parsed = parseRequestUrl(url);
+    var pathname = normalizeRequestPathname(parsed && parsed.pathname ? parsed.pathname : "/");
+    var payload = {
+      data: [],
+      items: [],
+      results: [],
+      connectors: [],
+      categories: [],
+      hasMore: false,
+      has_more: false,
+      nextCursor: null,
+      next_cursor: null,
+      total: 0
+    };
+    if (pathname.indexOf("/directory/") >= 0 || pathname.endsWith("/list")) {
+      return payload;
+    }
+    if (pathname.indexOf("/logo") >= 0) {
+      return {
+        base64: "",
+        contentType: "image/svg+xml"
+      };
+    }
+    return payload;
+  }
+
+  function getFetchUrl(input) {
+    if (typeof input === "string") {
+      return input;
+    }
+    if (input && typeof input.url === "string") {
+      return input.url;
+    }
+    return "";
+  }
+
+  async function readFetchBodyText(input, init) {
+    if (init && typeof init.body === "string") {
+      return init.body;
+    }
+    if (input && typeof input.clone === "function") {
+      try {
+        return await input.clone().text();
+      } catch (error) {}
+    }
+    return "";
+  }
+
+  async function interceptCodexProtocolFetch(input, init) {
+    var parsed = new URL(getFetchUrl(input), window.location.href);
+    var method = parsed.pathname.replace(/^\/+/, "") || null;
+    if (!method) {
+      return new Response(JSON.stringify({ error: "Missing Codex RPC method." }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+    var params = {};
+    var rawBody = await readFetchBodyText(input, init);
+    if (rawBody) {
+      try {
+        params = JSON.parse(rawBody);
+      } catch (error) {}
+    }
+    var response = await fetch("/codex-mobile/rpc", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: method, params: params || {} }),
+      signal: init && init.signal ? init.signal : input && input.signal ? input.signal : void 0
+    });
+    var payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+    var body = payload && payload.ok === true ? payload.result : payload;
+    return new Response(JSON.stringify(body ?? null), {
+      status: response.status,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
   function interceptStatsigFetch() {
     if (typeof window.fetch !== "function" || typeof Response === "undefined") {
       return;
     }
     var originalFetch = window.fetch.bind(window);
     window.fetch = function (input, init) {
-      var url = typeof input === "string" ? input : input && typeof input.url === "string" ? input.url : "";
+      var url = getFetchUrl(input);
       if (isStatsigInitUrl(url)) {
         return Promise.resolve(new Response(JSON.stringify(buildStatsigBootstrapPayload()), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      }
+      if (isCodexProtocolUrl(url)) {
+        return interceptCodexProtocolFetch(input, init);
+      }
+      if (isSentryIpcUrl(url)) {
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        }));
+      }
+      if (isExternalConnectorDirectoryUrl(url)) {
+        post("connector-directory-stubbed", { url: url });
+        return Promise.resolve(new Response(JSON.stringify(buildEmptyConnectorDirectoryPayload(url)), {
           status: 200,
           headers: { "Content-Type": "application/json" }
         }));
@@ -665,6 +1092,9 @@ func buildMobilePreloadScript() string {
     },
     dispatchWorkerMessage: function (workerId, payload) {
       emitWorkerMessage(workerId, payload);
+    },
+    resolveBridgeRequest: function (requestId, result) {
+      resolveBridgeRequest(requestId, result);
     },
     updateTheme: function (nextTheme) {
       currentTheme = nextTheme;
@@ -708,12 +1138,15 @@ func buildMobilePreloadScript() string {
       };
     },
     showContextMenu: function (payload) {
-      post("bridge-show-context-menu", payload);
-      return Promise.resolve();
+      trace("showContextMenu", {
+        itemCount: Array.isArray(payload) ? payload.length : null,
+        payload: payload
+      });
+      return requestBridgeResult("bridge-show-context-menu", { items: payload }, "context-menu");
     },
     showApplicationMenu: function (menuId, x, y) {
-      post("bridge-show-application-menu", { menuId: menuId, x: x, y: y });
-      return Promise.resolve();
+      trace("showApplicationMenu", { menuId: menuId, x: x, y: y });
+      return requestBridgeResult("bridge-show-application-menu", { menuId: menuId, x: x, y: y }, "application-menu");
     },
     getFastModeRolloutMetrics: function () {
       return Promise.resolve({ enabled: true, estimatedSavedMs: 0, rolloutCountWithCompletedTurns: 0 });
@@ -753,6 +1186,7 @@ func buildMobilePreloadScript() string {
   installThemeSurfaceOverrides();
   applyThemeAttributes(currentTheme);
   installPageScrollLock();
+  installSidebarLongPressContextMenu();
   post("preload-ready", { theme: currentTheme, href: window.location.href });
 })();
 `) + "\n"
@@ -793,7 +1227,7 @@ func rewriteUIJavaScriptAsset(relativePath string, source string) string {
 		return next
 	}
 
-	if relativePath == "assets/use-auth-CqAAwYIh.js" {
+	if strings.HasPrefix(relativePath, "assets/use-auth-") && strings.HasSuffix(relativePath, ".js") {
 		return strings.ReplaceAll(
 			source,
 			"if(e==null){d(null),c(!1);return}d(null),c(!0)",
@@ -801,7 +1235,7 @@ func rewriteUIJavaScriptAsset(relativePath string, source string) string {
 		)
 	}
 
-	if relativePath == "assets/general-settings-zh7-fYtq.js" {
+	if strings.HasPrefix(relativePath, "assets/general-settings-") && strings.HasSuffix(relativePath, ".js") {
 		return strings.ReplaceAll(
 			source,
 			"r=n?.fast_mode===!0&&Ot(t)",

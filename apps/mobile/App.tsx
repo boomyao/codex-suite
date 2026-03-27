@@ -5,7 +5,9 @@ import {
   Alert,
   Linking,
   Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -25,29 +27,214 @@ import type {
 } from './src/appServerProtocol';
 import { CodexAppServerClient } from './src/codexAppServerClient';
 
-const STORAGE_KEY = 'codex-mobile.remote-shell.preferences.v3';
-const LEGACY_STORAGE_KEYS = ['codex-mobile.desktop-shell.preferences.v2'];
+const STORAGE_KEY = 'codex-mobile.remote-shell.preferences.v5';
+const LEGACY_STORAGE_KEYS = [
+  'codex-mobile.remote-shell.preferences.v4',
+  'codex-mobile.remote-shell.preferences.v3',
+  'codex-mobile.desktop-shell.preferences.v2',
+];
 const LOCAL_SERVER_DEBUG_ENDPOINT = DEFAULT_SERVER_ENDPOINT;
-const FORCE_LOCAL_DEBUG_ENDPOINTS = typeof __DEV__ !== 'undefined' && __DEV__;
 const ENABLE_SERVER_DEBUG_LOGS = typeof __DEV__ !== 'undefined' && __DEV__;
 
-interface MobilePreferences {
+interface BridgeProfile {
+  id: string;
+  name: string;
   serverEndpoint: string;
-  prefersDarkMode: boolean;
+  authToken: string | null;
 }
 
-const DEFAULT_PREFERENCES: MobilePreferences = {
-  serverEndpoint: LOCAL_SERVER_DEBUG_ENDPOINT,
-  prefersDarkMode: true,
-};
+interface MobilePreferences {
+  prefersDarkMode: boolean;
+  activeBridgeId: string;
+  bridges: BridgeProfile[];
+}
 
-interface LegacyStoredPreferences {
+interface StoredBridgeProfile {
+  id?: unknown;
+  name?: unknown;
+  serverEndpoint?: unknown;
+  authToken?: unknown;
+}
+
+interface StoredMobilePreferences {
+  activeBridgeId?: unknown;
+  bridges?: unknown;
   endpoint?: unknown;
   serverEndpoint?: unknown;
   bridgeEndpoint?: unknown;
   uiEndpoint?: unknown;
   appServerEndpoint?: unknown;
   prefersDarkMode?: unknown;
+  authToken?: unknown;
+}
+
+function generateBridgeId() {
+  return `bridge_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
+}
+
+function deriveBridgeName(endpoint: string, fallback = 'Bridge') {
+  const normalized = normalizeEndpoint(endpoint);
+  if (!normalized) {
+    return fallback;
+  }
+  try {
+    const url = new URL(deriveServerHttpBaseUrl(normalized));
+    return url.host || fallback;
+  } catch {
+    return normalized;
+  }
+}
+
+function createBridgeProfile(
+  input: Partial<BridgeProfile> & Pick<BridgeProfile, 'serverEndpoint'>,
+): BridgeProfile {
+  const serverEndpoint = normalizeEndpoint(input.serverEndpoint);
+  const name =
+    typeof input.name === 'string' && input.name.trim().length > 0
+      ? input.name.trim()
+      : deriveBridgeName(serverEndpoint);
+  const authToken =
+    typeof input.authToken === 'string' && input.authToken.trim().length > 0
+      ? input.authToken.trim()
+      : null;
+
+  return {
+    id:
+      typeof input.id === 'string' && input.id.trim().length > 0
+        ? input.id.trim()
+        : generateBridgeId(),
+    name,
+    serverEndpoint,
+    authToken,
+  };
+}
+
+function createDefaultBridgeProfile(): BridgeProfile {
+  return createBridgeProfile({
+    id: 'bridge_local',
+    name: 'Local',
+    serverEndpoint: LOCAL_SERVER_DEBUG_ENDPOINT,
+    authToken: null,
+  });
+}
+
+function ensureBridgeProfiles(
+  input: unknown,
+  fallbackEndpoint: string | null,
+  fallbackAuthToken: string | null,
+): BridgeProfile[] {
+  const profiles: BridgeProfile[] = [];
+  const seenIds = new Set<string>();
+
+  if (Array.isArray(input)) {
+    for (const value of input) {
+      const profile = value as StoredBridgeProfile | null;
+      if (!profile || typeof profile !== 'object') {
+        continue;
+      }
+      const endpoint =
+        typeof profile.serverEndpoint === 'string' && profile.serverEndpoint.trim().length > 0
+          ? normalizeEndpoint(profile.serverEndpoint)
+          : '';
+      if (!endpoint) {
+        continue;
+      }
+
+      const nextProfile = createBridgeProfile({
+        id: typeof profile.id === 'string' ? profile.id : undefined,
+        name: typeof profile.name === 'string' ? profile.name : undefined,
+        serverEndpoint: endpoint,
+        authToken: typeof profile.authToken === 'string' ? profile.authToken : null,
+      });
+      if (seenIds.has(nextProfile.id)) {
+        nextProfile.id = generateBridgeId();
+      }
+      seenIds.add(nextProfile.id);
+      profiles.push(nextProfile);
+    }
+  }
+
+  if (profiles.length > 0) {
+    return profiles;
+  }
+
+  if (fallbackEndpoint) {
+    return [
+      createBridgeProfile({
+        id: 'bridge_primary',
+        serverEndpoint: fallbackEndpoint,
+        authToken: fallbackAuthToken,
+      }),
+    ];
+  }
+
+  return [createDefaultBridgeProfile()];
+}
+
+function deriveLegacyEndpoint(parsed: StoredMobilePreferences): string | null {
+  const legacyEndpoint =
+    typeof parsed.endpoint === 'string' && parsed.endpoint.trim().length > 0
+      ? parsed.endpoint.trim()
+      : null;
+
+  return typeof parsed.serverEndpoint === 'string' && parsed.serverEndpoint.trim().length > 0
+    ? parsed.serverEndpoint.trim()
+    : typeof parsed.bridgeEndpoint === 'string' && parsed.bridgeEndpoint.trim().length > 0
+      ? parsed.bridgeEndpoint.trim()
+      : typeof parsed.uiEndpoint === 'string' && parsed.uiEndpoint.trim().length > 0
+        ? parsed.uiEndpoint.trim()
+        : typeof parsed.appServerEndpoint === 'string' && parsed.appServerEndpoint.trim().length > 0
+          ? parsed.appServerEndpoint.trim()
+          : legacyEndpoint;
+}
+
+function migrateStoredPreferences(parsed: StoredMobilePreferences): MobilePreferences {
+  const fallbackEndpoint = deriveLegacyEndpoint(parsed);
+  const fallbackAuthToken =
+    typeof parsed.authToken === 'string' && parsed.authToken.trim().length > 0
+      ? parsed.authToken.trim()
+      : null;
+  const bridges = ensureBridgeProfiles(parsed.bridges, fallbackEndpoint, fallbackAuthToken);
+  const activeBridgeId =
+    typeof parsed.activeBridgeId === 'string' &&
+    bridges.some((bridge) => bridge.id === parsed.activeBridgeId)
+      ? parsed.activeBridgeId
+      : bridges[0].id;
+
+  return {
+    prefersDarkMode:
+      typeof parsed.prefersDarkMode === 'boolean' ? parsed.prefersDarkMode : true,
+    activeBridgeId,
+    bridges,
+  };
+}
+
+function resolveActiveBridge(preferences: MobilePreferences): BridgeProfile {
+  return (
+    preferences.bridges.find((bridge) => bridge.id === preferences.activeBridgeId) ??
+    preferences.bridges[0] ??
+    createDefaultBridgeProfile()
+  );
+}
+
+const DEFAULT_PREFERENCES: MobilePreferences = {
+  prefersDarkMode: true,
+  activeBridgeId: 'bridge_local',
+  bridges: [createDefaultBridgeProfile()],
+};
+
+interface ConnectionTargetResponse {
+  recommendedServerEndpoint: string;
+  authMode: 'none' | 'device-token';
+  localAuthPage: string | null;
+}
+
+interface BridgeAuthorizationResponse {
+  authorized: boolean;
+  authMode: 'none' | 'device-token';
+  localAuthPage: string | null;
+  reason: string | null;
+  deviceName: string | null;
 }
 
 const LOCAL_HOST_ID = 'local';
@@ -97,6 +284,28 @@ interface NativeEnvelope {
   __codexMobile?: boolean;
   kind?: string;
   payload?: unknown;
+}
+
+type BridgeMenuKind = 'application' | 'context';
+
+interface BridgeMenuItem {
+  id?: string;
+  type?: string;
+  label: string;
+  enabled: boolean;
+  submenu?: BridgeMenuItem[];
+}
+
+interface BridgeMenuLevel {
+  title: string | null;
+  items: BridgeMenuItem[];
+}
+
+interface ActiveBridgeMenu {
+  kind: BridgeMenuKind;
+  menuId: string | null;
+  requestId: string;
+  stack: BridgeMenuLevel[];
 }
 
 interface PendingServerRequestResolver {
@@ -365,6 +574,199 @@ function deriveServerHttpBaseUrl(endpoint: string): string {
   return `http://${normalized}`;
 }
 
+function buildAuthHeaders(authToken: string | null | undefined): Record<string, string> {
+  const token = typeof authToken === 'string' ? authToken.trim() : '';
+  if (!token) {
+    return {};
+  }
+  return {
+    Authorization: `Bearer ${token}`,
+  };
+}
+
+async function fetchConnectionTarget(
+  endpoint: string,
+  authToken: string | null | undefined,
+): Promise<ConnectionTargetResponse> {
+  const response = await fetch(`${deriveServerHttpBaseUrl(endpoint)}/codex-mobile/connect`, {
+    headers: buildAuthHeaders(authToken),
+  });
+  if (!response.ok) {
+    throw new Error(`Connection discovery failed with HTTP ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as {
+    connection?: {
+      recommendedServerEndpoint?: unknown;
+    };
+    auth?: {
+      mode?: unknown;
+    };
+    localAuthPage?: unknown;
+  };
+
+  const recommendedServerEndpoint =
+    typeof payload.connection?.recommendedServerEndpoint === 'string' &&
+    payload.connection.recommendedServerEndpoint.trim().length > 0
+      ? normalizeEndpoint(payload.connection.recommendedServerEndpoint)
+      : normalizeEndpoint(endpoint);
+
+  const authMode = payload.auth?.mode === 'device-token' ? 'device-token' : 'none';
+  const localAuthPage =
+    typeof payload.localAuthPage === 'string' && payload.localAuthPage.trim().length > 0
+      ? payload.localAuthPage.trim()
+      : null;
+
+  return {
+    recommendedServerEndpoint,
+    authMode,
+    localAuthPage,
+  };
+}
+
+async function completeDevicePairing(
+  endpoint: string,
+  pairingCode: string,
+  authToken: string | null | undefined,
+): Promise<{ accessToken: string; approved: boolean }> {
+  const response = await fetch(`${deriveServerHttpBaseUrl(endpoint)}/auth/pair/complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildAuthHeaders(authToken),
+    },
+    body: JSON.stringify({
+      code: pairingCode.trim(),
+      deviceName: `Codex Mobile (${Platform.OS})`,
+    }),
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        accessToken?: unknown;
+        approved?: unknown;
+        error?: unknown;
+      }
+    | null;
+
+  if (!response.ok) {
+    const errorMessage =
+      typeof payload?.error === 'string' && payload.error.trim().length > 0
+        ? payload.error
+        : `Pairing failed with HTTP ${response.status}.`;
+    throw new Error(errorMessage);
+  }
+
+  if (typeof payload?.accessToken !== 'string' || payload.accessToken.trim().length === 0) {
+    throw new Error('Pairing response did not include an access token.');
+  }
+
+  return {
+    accessToken: payload.accessToken.trim(),
+    approved: payload?.approved === true,
+  };
+}
+
+async function probeBridgeAuthorization(
+  endpoint: string,
+  authToken: string | null | undefined,
+): Promise<BridgeAuthorizationResponse> {
+  const response = await fetch(`${deriveServerHttpBaseUrl(endpoint)}/auth/session`, {
+    headers: buildAuthHeaders(authToken),
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        authorized?: unknown;
+        auth?: {
+          mode?: unknown;
+        };
+        localAuthPage?: unknown;
+        reason?: unknown;
+        deviceName?: unknown;
+        error?: unknown;
+      }
+    | null;
+
+  const authMode = payload?.auth?.mode === 'device-token' ? 'device-token' : 'none';
+  const localAuthPage =
+    typeof payload?.localAuthPage === 'string' && payload.localAuthPage.trim().length > 0
+      ? payload.localAuthPage.trim()
+      : null;
+  const reason =
+    typeof payload?.reason === 'string' && payload.reason.trim().length > 0
+      ? payload.reason.trim()
+      : null;
+  const deviceName =
+    typeof payload?.deviceName === 'string' && payload.deviceName.trim().length > 0
+      ? payload.deviceName.trim()
+      : null;
+
+  if (response.status === 401) {
+    return {
+      authorized: false,
+      authMode,
+      localAuthPage,
+      reason,
+      deviceName,
+    };
+  }
+  if (!response.ok) {
+    const errorMessage =
+      typeof payload?.error === 'string' && payload.error.trim().length > 0
+        ? payload.error
+        : `Authorization probe failed with HTTP ${response.status}.`;
+    throw new Error(errorMessage);
+  }
+
+  return {
+    authorized: payload?.authorized !== false,
+    authMode,
+    localAuthPage,
+    reason,
+    deviceName,
+  };
+}
+
+function buildDeviceTokenHelpMessage(
+  localAuthPage: string | null,
+  reason: string,
+): string {
+  if (localAuthPage) {
+    return `${reason} On the bridge host, open ${localAuthPage} to generate a pairing code and approve devices.`;
+  }
+  return `${reason} Open the bridge host locally and generate a pairing code before reconnecting.`;
+}
+
+function buildUnauthorizedReasonMessage(
+  probe: BridgeAuthorizationResponse,
+  fallbackReason: string,
+): string {
+  const deviceName = probe.deviceName ? ` for ${probe.deviceName}` : '';
+  switch (probe.reason) {
+    case 'pending_approval':
+      return buildDeviceTokenHelpMessage(
+        probe.localAuthPage,
+        `This device${deviceName} is paired but still waiting for approval.`,
+      );
+    case 'revoked':
+      return buildDeviceTokenHelpMessage(
+        probe.localAuthPage,
+        `This device token${deviceName} has been revoked. Re-pair this device to continue.`,
+      );
+    case 'unknown_token':
+      return buildDeviceTokenHelpMessage(
+        probe.localAuthPage,
+        `This device token is no longer recognized by the bridge.`,
+      );
+    case 'missing_token':
+      return buildDeviceTokenHelpMessage(
+        probe.localAuthPage,
+        `This bridge requires device pairing before it will accept requests.`,
+      );
+    default:
+      return buildDeviceTokenHelpMessage(probe.localAuthPage, fallbackReason);
+  }
+}
+
 function buildRemoteShellUrl(endpoint: string, themeVariant: 'light' | 'dark'): string {
   const baseUrl = deriveServerHttpBaseUrl(endpoint);
   return `${baseUrl}/ui/index.html?codexTheme=${encodeURIComponent(themeVariant)}`;
@@ -387,6 +789,37 @@ function resolveServerFetchUrl(rawUrl: string, endpoint: string): string | null 
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function normalizeBridgeMenuItems(value: unknown): BridgeMenuItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const nextItems: BridgeMenuItem[] = [];
+  for (const entry of value) {
+    const item = asObject(entry);
+    if (!item) {
+      continue;
+    }
+
+    const type = typeof item.type === 'string' ? item.type : 'normal';
+    const submenu = normalizeBridgeMenuItems(item.submenu);
+    const label = typeof item.label === 'string' ? item.label : '';
+    if (type !== 'separator' && !label && submenu.length === 0) {
+      continue;
+    }
+
+    nextItems.push({
+      id: typeof item.id === 'string' ? item.id : undefined,
+      type,
+      label,
+      enabled: item.enabled !== false,
+      submenu: submenu.length > 0 ? submenu : undefined,
+    });
+  }
+
+  return nextItems;
 }
 
 function normalizeErrorMessage(error: unknown): string {
@@ -533,6 +966,7 @@ export default function App() {
   const appServerResultCacheRef = useRef(new Map<string, CachedAppServerResult>());
   const pendingTurnCompletionRef = useRef(new Map<string, string>());
   const pendingTurnReconciliationsRef = useRef(new Map<string, Promise<void>>());
+  const lastAuthPromptAtRef = useRef(0);
   const pendingServerRequestResolversRef = useRef(
     new Map<AppServerRequestId, PendingServerRequestResolver>(),
   );
@@ -546,11 +980,25 @@ export default function App() {
   });
 
   const [preferences, setPreferences] = useState<MobilePreferences>(DEFAULT_PREFERENCES);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [serverEndpointDraft, setServerEndpointDraft] = useState(
-    DEFAULT_PREFERENCES.serverEndpoint,
+  const activeBridge = resolveActiveBridge(preferences);
+  const [resolvedServerEndpoint, setResolvedServerEndpoint] = useState(
+    activeBridge.serverEndpoint,
   );
+  const [resolvedAuthMode, setResolvedAuthMode] = useState<'none' | 'device-token'>('none');
+  const [resolvedLocalAuthPage, setResolvedLocalAuthPage] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [editingBridgeId, setEditingBridgeId] = useState(activeBridge.id);
+  const [bridgeNameDraft, setBridgeNameDraft] = useState(activeBridge.name);
+  const [serverEndpointDraft, setServerEndpointDraft] = useState(activeBridge.serverEndpoint);
+  const [pairingCodeDraft, setPairingCodeDraft] = useState('');
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [activeBridgeMenu, setActiveBridgeMenu] = useState<ActiveBridgeMenu | null>(null);
+  const [preferencesHydrated, setPreferencesHydrated] = useState(false);
+
+  const editingBridge =
+    preferences.bridges.find((bridge) => bridge.id === editingBridgeId) ?? null;
+  const activeAuthToken = activeBridge.authToken;
 
   useEffect(() => {
     void (async () => {
@@ -565,50 +1013,64 @@ export default function App() {
           }
         }
         if (!stored) {
+          setPreferencesHydrated(true);
           return;
         }
-        const parsed = JSON.parse(stored) as LegacyStoredPreferences;
-        const legacyEndpoint =
-          typeof parsed.endpoint === 'string' && parsed.endpoint.trim().length > 0
-            ? parsed.endpoint.trim()
-            : null;
-        const serverEndpoint =
-          typeof parsed.serverEndpoint === 'string' && parsed.serverEndpoint.trim().length > 0
-            ? parsed.serverEndpoint.trim()
-            : typeof parsed.bridgeEndpoint === 'string' && parsed.bridgeEndpoint.trim().length > 0
-              ? parsed.bridgeEndpoint.trim()
-              : typeof parsed.uiEndpoint === 'string' && parsed.uiEndpoint.trim().length > 0
-                ? parsed.uiEndpoint.trim()
-                : typeof parsed.appServerEndpoint === 'string' &&
-                    parsed.appServerEndpoint.trim().length > 0
-                  ? parsed.appServerEndpoint.trim()
-                  : legacyEndpoint;
-        const nextPreferences: MobilePreferences = {
-          serverEndpoint: serverEndpoint ?? DEFAULT_PREFERENCES.serverEndpoint,
-          prefersDarkMode:
-            typeof parsed.prefersDarkMode === 'boolean'
-              ? parsed.prefersDarkMode
-              : DEFAULT_PREFERENCES.prefersDarkMode,
-        };
-        if (FORCE_LOCAL_DEBUG_ENDPOINTS) {
-          nextPreferences.serverEndpoint = DEFAULT_PREFERENCES.serverEndpoint;
-        }
+        const parsed = JSON.parse(stored) as StoredMobilePreferences;
+        const nextPreferences = migrateStoredPreferences(parsed);
+        const nextActiveBridge = resolveActiveBridge(nextPreferences);
         setPreferences(nextPreferences);
-        setServerEndpointDraft(nextPreferences.serverEndpoint);
+        setResolvedServerEndpoint(nextActiveBridge.serverEndpoint);
+        setEditingBridgeId(nextActiveBridge.id);
+        setBridgeNameDraft(nextActiveBridge.name);
+        setServerEndpointDraft(nextActiveBridge.serverEndpoint);
         await Promise.all(
           LEGACY_STORAGE_KEYS.map((legacyKey) => AsyncStorage.removeItem(legacyKey)),
         );
       } catch (error) {
         console.warn('Failed to load mobile preferences', error);
+      } finally {
+        setPreferencesHydrated(true);
       }
     })();
   }, []);
 
   useEffect(() => {
+    if (!preferencesHydrated) {
+      return;
+    }
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(preferences)).catch((error) => {
       console.warn('Failed to persist mobile preferences', error);
     });
-  }, [preferences]);
+  }, [preferences, preferencesHydrated]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setResolvedServerEndpoint(activeBridge.serverEndpoint);
+    setResolvedAuthMode('none');
+    setResolvedLocalAuthPage(null);
+
+    void fetchConnectionTarget(activeBridge.serverEndpoint, activeAuthToken)
+      .then((connection) => {
+        if (cancelled) {
+          return;
+        }
+        setResolvedServerEndpoint(connection.recommendedServerEndpoint);
+        setResolvedAuthMode(connection.authMode);
+        setResolvedLocalAuthPage(connection.localAuthPage);
+      })
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
+        console.warn('Failed to resolve server connection target', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAuthToken, activeBridge.serverEndpoint]);
 
   useEffect(() => {
     let snapshotTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -678,7 +1140,7 @@ export default function App() {
         clearTimeout(modelListWarmTimeout);
       }
     };
-  }, [preferences.serverEndpoint]);
+  }, [activeAuthToken, resolvedServerEndpoint]);
 
   const themeVariant: 'light' | 'dark' =
     preferences.prefersDarkMode || systemTheme !== 'light' ? 'dark' : 'light';
@@ -687,8 +1149,8 @@ export default function App() {
       ? Math.max(Math.min(viewportWidth / 760, 0.56), 0.46)
       : 1;
   const remoteShellUrl = useMemo(
-    () => buildRemoteShellUrl(preferences.serverEndpoint, themeVariant),
-    [preferences.serverEndpoint, themeVariant],
+    () => buildRemoteShellUrl(resolvedServerEndpoint, themeVariant),
+    [resolvedServerEndpoint, themeVariant],
   );
 
   useEffect(() => {
@@ -698,6 +1160,42 @@ export default function App() {
   useEffect(() => {
     syncViewportToRenderer(viewportScale);
   }, [viewportScale]);
+
+  async function handleUnauthorizedBridgeAccess(
+    reason: string,
+    options: { showBanner?: boolean } = {},
+  ) {
+    try {
+      const probe = await probeBridgeAuthorization(
+        activeBridge.serverEndpoint,
+        activeAuthToken,
+      );
+      if (probe.authorized || probe.authMode !== 'device-token') {
+        return false;
+      }
+
+      const message = buildUnauthorizedReasonMessage(probe, reason);
+      setResolvedAuthMode(probe.authMode);
+      setResolvedLocalAuthPage(probe.localAuthPage);
+      setEditingBridgeId(activeBridge.id);
+      setBridgeNameDraft(activeBridge.name);
+      setServerEndpointDraft(activeBridge.serverEndpoint);
+      setSettingsOpen(true);
+      if (options.showBanner) {
+        setLoadError(message);
+      }
+
+      const now = Date.now();
+      if (now - lastAuthPromptAtRef.current > 5000) {
+        lastAuthPromptAtRef.current = now;
+        Alert.alert('Authentication required', message);
+      }
+      return true;
+    } catch (error) {
+      console.warn('Failed to probe bridge authorization state', error);
+      return false;
+    }
+  }
 
   function injectHostMessages(messages: Record<string, unknown>[]) {
     if (messages.length === 0) {
@@ -1152,6 +1650,11 @@ export default function App() {
         headers[key] = value;
       }
     }
+    if (activeAuthToken) {
+      if (!headers.Authorization) {
+        headers.Authorization = `Bearer ${activeAuthToken}`;
+      }
+    }
 
     const requestInit: RequestInit = {
       method,
@@ -1162,6 +1665,9 @@ export default function App() {
     }
 
     const response = await fetch(rawUrl, requestInit);
+    if (response.status === 401) {
+      void handleUnauthorizedBridgeAccess('A bridge request was rejected with HTTP 401.');
+    }
     const responseText = await response.text();
     let responseBody: unknown = null;
     if (responseText.trim().length > 0) {
@@ -1729,7 +2235,8 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
 
     const connectionVersion = appServerConnectionVersionRef.current;
     const nextClient = new CodexAppServerClient({
-      endpoint: preferences.serverEndpoint,
+      endpoint: resolvedServerEndpoint,
+      headers: buildAuthHeaders(activeAuthToken),
       onNotification: (notification) => {
         if (connectionVersion !== appServerConnectionVersionRef.current) {
           return;
@@ -1760,6 +2267,7 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
           return;
         }
         console.warn('App-server connection closed.');
+        void handleUnauthorizedBridgeAccess('The bridge closed the app-server session.');
       },
       onError: (error) => {
         if (connectionVersion !== appServerConnectionVersionRef.current) {
@@ -1786,6 +2294,9 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
           appServerClientRef.current = null;
         }
         appServerConnectPromiseRef.current = null;
+        void handleUnauthorizedBridgeAccess(
+          'The bridge rejected the app-server websocket connection.',
+        );
         throw error;
       });
 
@@ -1803,7 +2314,7 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
 
     const method = resolveRequestMethodName(rawUrl);
     if (!method) {
-      const proxyUrl = resolveServerFetchUrl(rawUrl, preferences.serverEndpoint);
+      const proxyUrl = resolveServerFetchUrl(rawUrl, resolvedServerEndpoint);
       if (proxyUrl) {
         try {
           await proxyHttpFetch(message, requestId, proxyUrl);
@@ -2203,8 +2714,7 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
         return;
       }
       case 'show-settings':
-        setServerEndpointDraft(preferences.serverEndpoint);
-        setSettingsOpen(true);
+        openSettingsForBridge(activeBridge);
         return;
       case 'open-in-browser':
         void handleOpenExternalUrl(message);
@@ -2385,10 +2895,12 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
         }
         return;
       }
-      case 'bridge-show-context-menu':
+      case 'bridge-show-context-menu': {
+        presentBridgeMenu('context', envelope.payload);
+        return;
+      }
       case 'bridge-show-application-menu': {
-        const summary = JSON.stringify(envelope.payload ?? {}, null, 2);
-        Alert.alert('Codex Mobile', summary);
+        presentBridgeMenu('application', envelope.payload);
         return;
       }
       case 'bridge-send-worker-message':
@@ -2405,19 +2917,275 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
     }
   }
 
-  function handleSaveSettings() {
+  function sendBridgeResponse(requestId: string, result: unknown) {
+    webViewRef.current?.injectJavaScript(
+      [
+        '(function () {',
+        '  var host = window.__codexMobileHost;',
+        '  if (host && typeof host.resolveBridgeRequest === "function") {',
+        `    host.resolveBridgeRequest(${JSON.stringify(requestId)}, ${JSON.stringify(result ?? null)});`,
+        '  }',
+        '})();',
+        'true;',
+      ].join('\n'),
+    );
+  }
+
+  function closeActiveBridgeMenu(result: Record<string, unknown> | null = null) {
+    if (!activeBridgeMenu) {
+      return;
+    }
+    const requestId = activeBridgeMenu.requestId;
+    setActiveBridgeMenu(null);
+    sendBridgeResponse(requestId, result);
+  }
+
+  function presentBridgeMenu(kind: BridgeMenuKind, payload: unknown) {
+    const request = asObject(payload);
+    const requestId =
+      request && typeof request.requestId === 'string' ? request.requestId : null;
+    if (!requestId) {
+      console.warn('[bridge-menu] missing request id', payload);
+      return;
+    }
+
+    const menuId =
+      request && typeof request.menuId === 'string' ? request.menuId : null;
+    const items = normalizeBridgeMenuItems(request?.items);
+    if (activeBridgeMenu) {
+      sendBridgeResponse(activeBridgeMenu.requestId, null);
+    }
+
+    if (items.length === 0) {
+      console.log('[bridge-menu] no menu items', { kind, menuId, payload });
+      sendBridgeResponse(requestId, null);
+      setActiveBridgeMenu(null);
+      return;
+    }
+
+    setActiveBridgeMenu({
+      kind,
+      menuId,
+      requestId,
+      stack: [
+        {
+          title: menuId,
+          items,
+        },
+      ],
+    });
+  }
+
+  function openBridgeSubmenu(item: BridgeMenuItem) {
+    if (!item.submenu || item.submenu.length === 0) {
+      return;
+    }
+    setActiveBridgeMenu((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        stack: [
+          ...current.stack,
+          {
+            title: item.label || null,
+            items: item.submenu ?? [],
+          },
+        ],
+      };
+    });
+  }
+
+  function popBridgeMenuLevel() {
+    setActiveBridgeMenu((current) => {
+      if (!current || current.stack.length <= 1) {
+        return current;
+      }
+      return {
+        ...current,
+        stack: current.stack.slice(0, -1),
+      };
+    });
+  }
+
+  const currentBridgeMenuLevel =
+    activeBridgeMenu && activeBridgeMenu.stack.length > 0
+      ? activeBridgeMenu.stack[activeBridgeMenu.stack.length - 1]
+      : null;
+  const isEditingActiveBridge = editingBridgeId === activeBridge.id;
+
+  function loadBridgeDraft(bridge: BridgeProfile) {
+    setEditingBridgeId(bridge.id);
+    setBridgeNameDraft(bridge.name);
+    setServerEndpointDraft(bridge.serverEndpoint);
+    setPairingCodeDraft('');
+  }
+
+  function openSettingsForBridge(bridge: BridgeProfile) {
+    loadBridgeDraft(bridge);
+    setSettingsOpen(true);
+  }
+
+  async function handleActivateBridge(bridge: BridgeProfile) {
+    loadBridgeDraft(bridge);
+    if (bridge.id === activeBridge.id) {
+      return;
+    }
+
+    setSettingsBusy(true);
+    try {
+      const connection = await fetchConnectionTarget(bridge.serverEndpoint, bridge.authToken);
+      if (connection.authMode === 'device-token' && !bridge.authToken) {
+        setResolvedAuthMode(connection.authMode);
+        setResolvedLocalAuthPage(connection.localAuthPage);
+        Alert.alert(
+          'Authentication required',
+          connection.localAuthPage
+            ? `Enter a pairing code before connecting. On the bridge host, open ${connection.localAuthPage} to generate and approve devices.`
+            : 'Enter a pairing code before connecting to this bridge.',
+        );
+        return;
+      }
+
+      setPreferences((current) => ({
+        ...current,
+        activeBridgeId: bridge.id,
+      }));
+      setResolvedServerEndpoint(connection.recommendedServerEndpoint);
+      setResolvedAuthMode(connection.authMode);
+      setResolvedLocalAuthPage(connection.localAuthPage);
+      setLoadError(null);
+      setSettingsOpen(false);
+    } catch (error) {
+      Alert.alert('Connection failed', normalizeErrorMessage(error));
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  function handleCreateBridgeDraft() {
+    setEditingBridgeId(generateBridgeId());
+    setBridgeNameDraft(`Bridge ${preferences.bridges.length + 1}`);
+    setServerEndpointDraft('');
+    setPairingCodeDraft('');
+  }
+
+  function handleDeleteBridge(bridgeId: string) {
+    const bridge = preferences.bridges.find((entry) => entry.id === bridgeId) ?? null;
+    if (!bridge) {
+      return;
+    }
+    if (preferences.bridges.length <= 1) {
+      Alert.alert('Cannot delete bridge', 'At least one bridge profile must remain.');
+      return;
+    }
+
+    const fallbackBridge =
+      preferences.bridges.find((entry) => entry.id !== bridgeId) ?? activeBridge;
+
+    Alert.alert('Delete bridge?', `Remove ${bridge.name} from this device?`, [
+      {
+        text: 'Cancel',
+        style: 'cancel',
+      },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setPreferences((current) => {
+            const remainingBridges = current.bridges.filter((entry) => entry.id !== bridgeId);
+            const nextActiveBridgeId =
+              current.activeBridgeId === bridgeId
+                ? remainingBridges[0]?.id ?? createDefaultBridgeProfile().id
+                : current.activeBridgeId;
+            return {
+              ...current,
+              activeBridgeId: nextActiveBridgeId,
+              bridges: remainingBridges.length > 0 ? remainingBridges : [createDefaultBridgeProfile()],
+            };
+          });
+          loadBridgeDraft(fallbackBridge);
+        },
+      },
+    ]);
+  }
+
+  async function handleSaveSettings() {
     const serverEndpoint = normalizeEndpoint(serverEndpointDraft);
     if (!serverEndpoint) {
       Alert.alert('Invalid server endpoint', 'Server endpoint cannot be empty.');
       return;
     }
 
-    setPreferences((current) => ({
-      ...current,
-      serverEndpoint,
-    }));
-    setLoadError(null);
-    setSettingsOpen(false);
+    setSettingsBusy(true);
+    try {
+      const trimmedName = bridgeNameDraft.trim();
+      const existingBridge = editingBridge;
+      const existingEndpoint = existingBridge
+        ? normalizeEndpoint(existingBridge.serverEndpoint)
+        : null;
+      let authToken =
+        existingEndpoint === serverEndpoint ? existingBridge?.authToken ?? null : null;
+      let connection = await fetchConnectionTarget(serverEndpoint, authToken);
+
+      if (pairingCodeDraft.trim().length > 0) {
+        const pairing = await completeDevicePairing(
+          serverEndpoint,
+          pairingCodeDraft,
+          authToken,
+        );
+        authToken = pairing.accessToken;
+        connection = await fetchConnectionTarget(serverEndpoint, authToken);
+        if (!pairing.approved) {
+          Alert.alert(
+            'Pairing pending approval',
+            connection.localAuthPage
+              ? `This device has been registered and is waiting for approval on the bridge host. On that host, open ${connection.localAuthPage}.`
+              : 'This device has been registered and is waiting for approval on the bridge host.',
+          );
+        }
+      } else if (connection.authMode === 'device-token' && !authToken) {
+        Alert.alert(
+          'Authentication required',
+          connection.localAuthPage
+            ? `Enter a pairing code before connecting. On the bridge host, open ${connection.localAuthPage} to generate and approve devices.`
+            : 'Enter a pairing code before connecting to this bridge.',
+        );
+        return;
+      }
+
+      const nextBridge = createBridgeProfile({
+        id: editingBridgeId,
+        name: trimmedName,
+        serverEndpoint,
+        authToken,
+      });
+
+      setPreferences((current) => {
+        const bridgeExists = current.bridges.some((bridge) => bridge.id === nextBridge.id);
+        return {
+          ...current,
+          activeBridgeId: nextBridge.id,
+          bridges: bridgeExists
+            ? current.bridges.map((bridge) => (bridge.id === nextBridge.id ? nextBridge : bridge))
+            : [...current.bridges, nextBridge],
+        };
+      });
+      setEditingBridgeId(nextBridge.id);
+      setBridgeNameDraft(nextBridge.name);
+      setServerEndpointDraft(nextBridge.serverEndpoint);
+      setResolvedServerEndpoint(connection.recommendedServerEndpoint);
+      setResolvedAuthMode(connection.authMode);
+      setResolvedLocalAuthPage(connection.localAuthPage);
+      setPairingCodeDraft('');
+      setLoadError(null);
+      setSettingsOpen(false);
+    } catch (error) {
+      Alert.alert('Connection failed', normalizeErrorMessage(error));
+    } finally {
+      setSettingsBusy(false);
+    }
   }
 
   return (
@@ -2427,7 +3195,7 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
       <WebView
         ref={webViewRef}
         originWhitelist={['*']}
-        source={{ uri: remoteShellUrl }}
+        source={{ uri: remoteShellUrl, headers: buildAuthHeaders(activeAuthToken) }}
         onMessage={handleEnvelope}
         javaScriptEnabled
         domStorageEnabled
@@ -2439,6 +3207,13 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
           setLoadError(event.nativeEvent.description);
         }}
         onHttpError={(event) => {
+          if (event.nativeEvent.statusCode === 401) {
+            setLoadError('Authentication required. Checking bridge pairing status...');
+            void handleUnauthorizedBridgeAccess('The remote shell returned HTTP 401.', {
+              showBanner: true,
+            });
+            return;
+          }
           setLoadError(`HTTP ${event.nativeEvent.statusCode}`);
         }}
         onLoadStart={() => {
@@ -2450,12 +3225,11 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
       <View style={styles.overlayRow}>
         <Pressable
           onPress={() => {
-            setServerEndpointDraft(preferences.serverEndpoint);
-            setSettingsOpen(true);
+            openSettingsForBridge(activeBridge);
           }}
           style={styles.serverButton}
         >
-          <Text style={styles.serverButtonText}>Server</Text>
+          <Text style={styles.serverButtonText}>{activeBridge.name}</Text>
         </Pressable>
       </View>
 
@@ -2468,14 +3242,130 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
       ) : null}
 
       <Modal
+        visible={activeBridgeMenu !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => closeActiveBridgeMenu()}
+      >
+        <Pressable style={styles.menuScrim} onPress={() => closeActiveBridgeMenu()}>
+          <Pressable style={styles.menuSheet} onPress={() => {}}>
+            {activeBridgeMenu && activeBridgeMenu.stack.length > 1 ? (
+              <Pressable style={styles.menuBackButton} onPress={popBridgeMenuLevel}>
+                <Text style={styles.menuBackText}>Back</Text>
+              </Pressable>
+            ) : null}
+
+            <Text style={styles.menuTitle}>
+              {currentBridgeMenuLevel?.title ||
+                (activeBridgeMenu?.kind === 'context' ? 'Context menu' : 'Menu')}
+            </Text>
+
+            <View style={styles.menuList}>
+              {currentBridgeMenuLevel?.items.map((item, index) =>
+                item.type === 'separator' ? (
+                  <View
+                    key={item.id ?? `separator-${index}`}
+                    style={styles.menuSeparator}
+                  />
+                ) : (
+                  <Pressable
+                    key={item.id ?? `${item.label}-${index}`}
+                    disabled={!item.enabled}
+                    onPress={() => {
+                      if (item.submenu && item.submenu.length > 0) {
+                        openBridgeSubmenu(item);
+                        return;
+                      }
+                      if (item.id) {
+                        closeActiveBridgeMenu({ id: item.id });
+                        return;
+                      }
+                      closeActiveBridgeMenu();
+                    }}
+                    style={[
+                      styles.menuItem,
+                      !item.enabled && styles.menuItemDisabled,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.menuItemText,
+                        !item.enabled && styles.menuItemTextDisabled,
+                      ]}
+                    >
+                      {item.label}
+                    </Text>
+                    {item.submenu && item.submenu.length > 0 ? (
+                      <Text style={styles.menuChevron}>›</Text>
+                    ) : null}
+                  </Pressable>
+                ),
+              )}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal
         visible={settingsOpen}
         transparent
         animationType="fade"
         onRequestClose={() => setSettingsOpen(false)}
       >
         <View style={styles.modalScrim}>
-          <View style={styles.modalCard}>
+          <ScrollView
+            style={styles.modalCard}
+            contentContainerStyle={styles.modalContent}
+            keyboardShouldPersistTaps="handled"
+          >
             <Text style={styles.modalTitle}>Server Settings</Text>
+            <Text style={styles.modalHint}>Active bridge: {activeBridge.name}</Text>
+            <Text style={styles.modalHint}>
+              Tap a saved bridge to connect. Edit the fields below, then use Save & Connect to
+              update the selected bridge.
+            </Text>
+            <Text style={styles.modalLabel}>Bridges</Text>
+            <View style={styles.bridgeList}>
+              {preferences.bridges.map((bridge) => {
+                const selected = bridge.id === editingBridgeId;
+                const isActive = bridge.id === activeBridge.id;
+                return (
+                  <Pressable
+                    key={bridge.id}
+                    disabled={settingsBusy}
+                    onPress={() => {
+                      void handleActivateBridge(bridge);
+                    }}
+                    style={[
+                      styles.bridgeRow,
+                      selected && styles.bridgeRowSelected,
+                      settingsBusy && styles.bridgeRowDisabled,
+                    ]}
+                  >
+                    <View style={styles.bridgeRowBody}>
+                      <Text style={styles.bridgeRowTitle}>{bridge.name}</Text>
+                      <Text style={styles.bridgeRowSubtitle}>{bridge.serverEndpoint}</Text>
+                    </View>
+                    <Text style={[styles.bridgeBadge, isActive && styles.bridgeBadgeActive]}>
+                      {isActive ? 'Active' : selected ? 'Selected' : 'Saved'}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Pressable style={styles.addBridgeButton} onPress={handleCreateBridgeDraft}>
+              <Text style={styles.addBridgeButtonText}>New Bridge</Text>
+            </Pressable>
+            <Text style={styles.modalLabel}>Bridge Name</Text>
+            <TextInput
+              value={bridgeNameDraft}
+              onChangeText={setBridgeNameDraft}
+              autoCapitalize="words"
+              autoCorrect={false}
+              style={styles.input}
+              placeholder="Home Mac"
+              placeholderTextColor="#8e958f"
+            />
             <Text style={styles.modalLabel}>Server Endpoint</Text>
             <TextInput
               value={serverEndpointDraft}
@@ -2490,6 +3380,43 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
               The mobile app loads remote shell assets and Codex protocol traffic from this single
               service address.
             </Text>
+            <Text style={styles.modalHint}>
+              {isEditingActiveBridge
+                ? `Resolved endpoint: ${resolvedServerEndpoint}`
+                : 'Save this bridge to connect and resolve its public endpoint.'}
+            </Text>
+            <Text style={styles.modalHint}>
+              {isEditingActiveBridge
+                ? `Auth mode: ${resolvedAuthMode}`
+                : 'Auth mode is shown for the active bridge only.'}
+            </Text>
+            {isEditingActiveBridge && resolvedLocalAuthPage ? (
+              <Text style={styles.modalHint}>
+                On the bridge host, open {resolvedLocalAuthPage} to generate pairing codes and
+                approve devices.
+              </Text>
+            ) : null}
+            <Text style={styles.modalLabel}>Pairing Code</Text>
+            <TextInput
+              value={pairingCodeDraft}
+              onChangeText={setPairingCodeDraft}
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.input}
+              placeholder="Optional 8-digit code"
+              placeholderTextColor="#8e958f"
+            />
+            <Text style={styles.modalHint}>
+              Enter a pairing code only when the bridge asks for device pairing.
+            </Text>
+            {editingBridge ? (
+              <Pressable
+                style={[styles.actionButton, styles.dangerButton]}
+                onPress={() => handleDeleteBridge(editingBridge.id)}
+              >
+                <Text style={styles.dangerButtonText}>Delete This Bridge</Text>
+              </Pressable>
+            ) : null}
 
             <Pressable
               style={styles.toggleRow}
@@ -2509,18 +3436,24 @@ function buildAppServerRequestCacheKey(method: string, params: unknown) {
             <View style={styles.actionsRow}>
               <Pressable
                 style={[styles.actionButton, styles.secondaryButton]}
+                disabled={settingsBusy}
                 onPress={() => setSettingsOpen(false)}
               >
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </Pressable>
               <Pressable
                 style={[styles.actionButton, styles.primaryButton]}
-                onPress={handleSaveSettings}
+                disabled={settingsBusy}
+                onPress={() => {
+                  void handleSaveSettings();
+                }}
               >
-                <Text style={styles.primaryButtonText}>Reload</Text>
+                <Text style={styles.primaryButtonText}>
+                  {settingsBusy ? 'Connecting…' : 'Save & Connect'}
+                </Text>
               </Pressable>
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </View>
@@ -2576,6 +3509,72 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  menuScrim: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.42)',
+    padding: 16,
+  },
+  menuSheet: {
+    backgroundColor: '#0d1110',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    gap: 10,
+  },
+  menuBackButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  menuBackText: {
+    color: '#9eb6a1',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  menuTitle: {
+    color: '#f1f4ef',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  menuList: {
+    gap: 6,
+  },
+  menuSeparator: {
+    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    borderTopWidth: 1,
+    marginVertical: 4,
+  },
+  menuItem: {
+    alignItems: 'center',
+    borderRadius: 14,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  menuItemDisabled: {
+    opacity: 0.42,
+  },
+  menuItemText: {
+    color: '#eef2ec',
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  menuItemTextDisabled: {
+    color: '#728176',
+  },
+  menuChevron: {
+    color: '#8fa794',
+    fontSize: 22,
+    lineHeight: 22,
+    marginLeft: 12,
+  },
   modalScrim: {
     flex: 1,
     alignItems: 'center',
@@ -2586,10 +3585,13 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 420,
+    maxHeight: '88%',
     backgroundColor: '#0d1110',
     borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 20,
     borderWidth: 1,
+  },
+  modalContent: {
     padding: 20,
     gap: 12,
   },
@@ -2609,6 +3611,62 @@ const styles = StyleSheet.create({
     color: '#8e958f',
     fontSize: 12,
     lineHeight: 18,
+  },
+  bridgeList: {
+    gap: 8,
+  },
+  bridgeRow: {
+    alignItems: 'center',
+    backgroundColor: '#111715',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  bridgeRowSelected: {
+    borderColor: 'rgba(128, 215, 165, 0.68)',
+    backgroundColor: '#13211b',
+  },
+  bridgeRowDisabled: {
+    opacity: 0.6,
+  },
+  bridgeRowBody: {
+    flex: 1,
+    gap: 3,
+  },
+  bridgeRowTitle: {
+    color: '#eef2ec',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  bridgeRowSubtitle: {
+    color: '#8e958f',
+    fontSize: 12,
+  },
+  bridgeBadge: {
+    color: '#9eb6a1',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  bridgeBadgeActive: {
+    color: '#89c08b',
+  },
+  addBridgeButton: {
+    alignItems: 'center',
+    backgroundColor: '#171d1b',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  addBridgeButtonText: {
+    color: '#d5dbd6',
+    fontSize: 14,
+    fontWeight: '600',
   },
   input: {
     backgroundColor: '#111715',
@@ -2665,6 +3723,15 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#0b100f',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  dangerButton: {
+    alignItems: 'center',
+    backgroundColor: '#2a1313',
+  },
+  dangerButtonText: {
+    color: '#ffc5c5',
     fontSize: 14,
     fontWeight: '700',
   },

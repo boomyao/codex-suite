@@ -1,0 +1,82 @@
+name: Bridge Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bridge_tag:
+        description: Release tag to package
+        required: true
+        type: string
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  package-bridge:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        platform:
+          - darwin-arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/bridge/go.mod
+
+      - name: Resolve bridge tag
+        id: bridge_tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            bridge_tag="${{ github.event.release.tag_name }}"
+          else
+            bridge_tag="${{ github.event.inputs.bridge_tag }}"
+          fi
+          echo "bridge_tag=${bridge_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate runtime pointer manifest
+        run: |
+          set -euo pipefail
+          outdir="$(mktemp -d)"
+          node apps/bridge/scripts/runtime_release.mjs write-bridge-manifest \
+            --lock apps/bridge/release/runtime-lock.json \
+            --platform "${{ matrix.platform }}" \
+            --bridge-version "${{ steps.bridge_tag.outputs.bridge_tag }}" \
+            --runtime-repo "${{ github.repository }}" \
+            --output "${outdir}/bridge-runtime-manifest-${{ matrix.platform }}.json"
+          echo "POINTER_MANIFEST=${outdir}/bridge-runtime-manifest-${{ matrix.platform }}.json" >> "${GITHUB_ENV}"
+          echo "PACKAGE_OUT_DIR=${outdir}/package" >> "${GITHUB_ENV}"
+
+      - name: Package bridge release tarball
+        run: |
+          set -euo pipefail
+          node apps/bridge/scripts/package_release.mjs \
+            --version "${{ steps.bridge_tag.outputs.bridge_tag }}" \
+            --platform "${{ matrix.platform }}" \
+            --output-dir "${PACKAGE_OUT_DIR}" \
+            --pointer-manifest "${POINTER_MANIFEST}" \
+            --repo-root "${GITHUB_WORKSPACE}"
+          version="${{ steps.bridge_tag.outputs.bridge_tag }}"
+          version="${version#v}"
+          echo "PACKAGE_TARBALL=${PACKAGE_OUT_DIR}/codex-bridge_${version}_${{ matrix.platform }}.tar.gz" >> "${GITHUB_ENV}"
+
+      - name: Upload bridge tarball to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.bridge_tag.outputs.bridge_tag }}" \
+            "${PACKAGE_TARBALL}#$(basename "${PACKAGE_TARBALL}")" \
+            --clobber

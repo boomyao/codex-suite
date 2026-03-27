@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,8 +15,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+)
 
-	"github.com/boomyao/codex-bridge/internal/bridge"
+const (
+	ModeManaged = "managed"
+	ModeRemote  = "remote"
 )
 
 type Command struct {
@@ -26,25 +28,21 @@ type Command struct {
 }
 
 type Info struct {
-	BridgeHTTPURL         string
-	BridgeWebSocketURL    string
-	BridgeReadyURL        string
+	Mode                  string
 	AppServerWebSocketURL string
 }
 
 type ManagerConfig struct {
-	Host                string
-	BridgePort          int
-	DesktopWebviewRoot  string
-	UIPathPrefix        string
-	AppServerPort       int
-	ManageAppServer     bool
-	ExternalUpstreamURL string
-	AppServerCommand    Command
-	AutoRestart         bool
-	RestartDelay        time.Duration
-	CWD                 string
-	Logger              *log.Logger
+	Mode             string
+	ListenHost       string
+	ListenPort       int
+	RemoteURL        string
+	CodexHome        string
+	AppServerCommand Command
+	AutoRestart      bool
+	RestartDelay     time.Duration
+	CWD              string
+	Logger           *log.Logger
 }
 
 type Manager struct {
@@ -52,7 +50,6 @@ type Manager struct {
 	logger        *log.Logger
 	mu            sync.Mutex
 	cancel        context.CancelFunc
-	bridge        *bridge.Bridge
 	appServerCmd  *exec.Cmd
 	appServerDone chan error
 	info          *Info
@@ -65,17 +62,14 @@ func New(config ManagerConfig) *Manager {
 	if logger == nil {
 		logger = log.Default()
 	}
-	if config.Host == "" {
-		config.Host = "127.0.0.1"
+	if config.Mode == "" {
+		config.Mode = ModeManaged
 	}
-	if config.BridgePort == 0 {
-		config.BridgePort = 8787
+	if strings.TrimSpace(config.ListenHost) == "" {
+		config.ListenHost = "127.0.0.1"
 	}
-	if config.UIPathPrefix == "" {
-		config.UIPathPrefix = "/ui"
-	}
-	if config.AppServerPort == 0 {
-		config.AppServerPort = 9876
+	if config.ListenPort == 0 {
+		config.ListenPort = 9876
 	}
 	if config.RestartDelay <= 0 {
 		config.RestartDelay = 1500 * time.Millisecond
@@ -112,62 +106,22 @@ func (m *Manager) Start(ctx context.Context) (*Info, error) {
 }
 
 func (m *Manager) performStart(ctx context.Context) (*Info, error) {
-	host := m.config.Host
-	bridgePort, err := findAvailablePort(host, m.config.BridgePort)
-	if err != nil {
-		return nil, err
-	}
-
-	upstreamURL := stringsTrimSpace(m.config.ExternalUpstreamURL)
-	if m.config.ManageAppServer {
-		appServerPort, err := findAvailablePort(host, m.config.AppServerPort)
-		if err != nil {
-			return nil, err
-		}
-		upstreamURL = fmt.Sprintf("ws://%s:%d", host, appServerPort)
+	switch m.config.Mode {
+	case ModeManaged:
+		upstreamURL := fmt.Sprintf("ws://%s:%d", m.config.ListenHost, m.config.ListenPort)
 		if err := m.startManagedAppServer(ctx, upstreamURL); err != nil {
 			return nil, err
 		}
-	} else if upstreamURL == "" {
-		return nil, errors.New("no upstream app-server URL configured")
-	}
-
-	bridgeServer := bridge.New(bridge.Config{
-		Host:               host,
-		Port:               bridgePort,
-		UpstreamURL:        upstreamURL,
-		HealthEnabled:      true,
-		HealthPath:         "/healthz",
-		ReadyPath:          "/readyz",
-		ProbeTimeout:       2 * time.Second,
-		ProbeCacheTTL:      5 * time.Second,
-		DesktopWebviewRoot: m.config.DesktopWebviewRoot,
-		UIPathPrefix:       m.config.UIPathPrefix,
-	}, m.logger)
-
-	bridgeInfo, err := bridgeServer.Start(ctx)
-	if err != nil {
-		if m.appServerCmd != nil {
-			process, doneCh, stopErr := m.stopAppServerLocked()
-			if stopErr == nil {
-				_ = waitForStoppedProcess(context.Background(), process, doneCh)
-			}
+		m.logger.Printf("%s [codex-bridge-runtime] app-server ready %s", nowISO(), upstreamURL)
+		return &Info{Mode: m.config.Mode, AppServerWebSocketURL: upstreamURL}, nil
+	case ModeRemote:
+		if stringsTrimSpace(m.config.RemoteURL) == "" {
+			return nil, errors.New("no remote app-server URL configured")
 		}
-		return nil, err
+		return &Info{Mode: m.config.Mode, AppServerWebSocketURL: stringsTrimSpace(m.config.RemoteURL)}, nil
+	default:
+		return nil, fmt.Errorf("unsupported runtime mode %q", m.config.Mode)
 	}
-
-	m.mu.Lock()
-	m.bridge = bridgeServer
-	m.mu.Unlock()
-
-	info := &Info{
-		BridgeHTTPURL:         bridgeInfo.BridgeHTTPURL,
-		BridgeWebSocketURL:    bridgeInfo.BridgeWebSocketURL,
-		BridgeReadyURL:        bridgeInfo.BridgeReadyURL,
-		AppServerWebSocketURL: upstreamURL,
-	}
-	m.logger.Printf("%s [codex-bridge-runtime] bridge ready %s upstream %s", nowISO(), info.BridgeHTTPURL, upstreamURL)
-	return info, nil
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
@@ -178,8 +132,6 @@ func (m *Manager) Stop(ctx context.Context) error {
 		m.restartTimer = nil
 	}
 	cancel := m.cancel
-	bridgeServer := m.bridge
-	m.bridge = nil
 	info := m.info
 	m.info = nil
 	m.mu.Unlock()
@@ -187,11 +139,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 	if cancel != nil {
 		cancel()
 	}
-	if bridgeServer != nil {
-		_ = bridgeServer.Close(ctx)
-	}
 	if info != nil {
-		m.logger.Printf("%s [codex-bridge-runtime] stopping runtime %s", nowISO(), info.BridgeHTTPURL)
+		m.logger.Printf("%s [codex-bridge-runtime] stopping runtime %s", nowISO(), info.AppServerWebSocketURL)
 	}
 	return m.stopAppServer(ctx)
 }
@@ -202,12 +151,18 @@ func (m *Manager) startManagedAppServer(ctx context.Context, upstreamURL string)
 		command.Path = "codex"
 	}
 	args := append([]string{}, command.Args...)
+	if len(args) == 0 || args[0] != "app-server" {
+		args = append([]string{"app-server"}, args...)
+	}
 	args = append(args, "--listen", upstreamURL)
 	m.logger.Printf("%s [codex-bridge-runtime] starting app-server %s %s", nowISO(), command.Path, stringsJoin(args, " "))
 
 	cmd := exec.CommandContext(ctx, command.Path, args...)
 	cmd.Dir = m.config.CWD
 	cmd.Env = append(os.Environ(), "CODEX_INTERNAL_ORIGINATOR_OVERRIDE=codex-bridge")
+	if strings.TrimSpace(m.config.CodexHome) != "" {
+		cmd.Env = append(cmd.Env, "CODEX_HOME="+strings.TrimSpace(m.config.CodexHome))
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -233,8 +188,6 @@ func (m *Manager) startManagedAppServer(ctx context.Context, upstreamURL string)
 	if err := waitForWebSocketReady(ctx, upstreamURL, 15*time.Second); err != nil {
 		return fmt.Errorf("app-server exited before becoming ready: %w", err)
 	}
-
-	m.logger.Printf("%s [codex-bridge-runtime] app-server ready %s", nowISO(), upstreamURL)
 	return nil
 }
 
@@ -251,14 +204,13 @@ func (m *Manager) waitForAppServerExit(cmd *exec.Cmd) {
 		m.appServerCmd = nil
 	}
 	m.appServerDone = nil
-	shouldRestart := !m.stopping && m.config.ManageAppServer && m.config.AutoRestart
+	shouldRestart := !m.stopping && m.config.Mode == ModeManaged && m.config.AutoRestart
 	stopping := m.stopping
 	m.mu.Unlock()
 
 	if stopping {
 		return
 	}
-
 	if err == nil || errors.Is(err, context.Canceled) {
 		return
 	}
@@ -341,19 +293,6 @@ func waitForStoppedProcess(ctx context.Context, process *os.Process, doneCh chan
 		}
 		return nil
 	}
-}
-
-func findAvailablePort(host string, preferred int) (int, error) {
-	for port := preferred; port < preferred+200; port++ {
-		address := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			continue
-		}
-		_ = listener.Close()
-		return port, nil
-	}
-	return 0, fmt.Errorf("no available port found from %d", preferred)
 }
 
 func waitForWebSocketReady(ctx context.Context, rawURL string, timeout time.Duration) error {

@@ -26,6 +26,7 @@ type JsonRpcResponse = {
 
 export interface CodexAppServerClientOptions {
   endpoint: string;
+  headers?: Record<string, string>;
   onNotification?: (notification: AppServerServerNotification) => void;
   onServerRequest?: (request: AppServerServerRequest) => Promise<unknown> | unknown;
   onClose?: () => void;
@@ -34,6 +35,7 @@ export interface CodexAppServerClientOptions {
 
 export class CodexAppServerClient {
   private endpoint: string;
+  private headers?: Record<string, string>;
   private onNotification?: (notification: AppServerServerNotification) => void;
   private onServerRequest?: (request: AppServerServerRequest) => Promise<unknown> | unknown;
   private onClose?: () => void;
@@ -44,6 +46,7 @@ export class CodexAppServerClient {
 
   constructor(options: CodexAppServerClientOptions) {
     this.endpoint = options.endpoint;
+    this.headers = options.headers;
     this.onNotification = options.onNotification;
     this.onServerRequest = options.onServerRequest;
     this.onClose = options.onClose;
@@ -59,7 +62,18 @@ export class CodexAppServerClient {
       throw new Error('App-server socket connection is already in progress.');
     }
 
-    const socket = new WebSocket(this.endpoint);
+    const socket =
+      this.headers && Object.keys(this.headers).length > 0
+        ? new (WebSocket as unknown as {
+            new (
+              url: string,
+              protocols: string[] | undefined,
+              options: { headers: Record<string, string> },
+            ): WebSocket;
+          })(this.endpoint, undefined, {
+            headers: this.headers,
+          })
+        : new WebSocket(this.endpoint);
     this.socket = socket;
     let opened = false;
 

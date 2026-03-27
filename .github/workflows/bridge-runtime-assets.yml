@@ -1,0 +1,204 @@
+name: Bridge Runtime Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      bridge_tag:
+        description: Existing codex-bridge release tag that should receive the runtime pointer manifest
+        required: false
+        type: string
+      platform:
+        description: Runtime platform
+        required: false
+        default: darwin-arm64
+        type: string
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  publish-runtime:
+    runs-on: macos-latest
+    env:
+      LOCK_FILE: apps/bridge/release/runtime-lock.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Resolve runtime inputs
+        run: |
+          set -euo pipefail
+          PLATFORM_INPUT="${{ github.event.inputs.platform }}"
+          if [ -z "${PLATFORM_INPUT}" ]; then
+            PLATFORM_INPUT="darwin-arm64"
+          fi
+          node apps/bridge/scripts/runtime_release.mjs print-env \
+            --lock "${LOCK_FILE}" \
+            --platform "${PLATFORM_INPUT}" >> "${GITHUB_ENV}"
+
+      - name: Check whether runtime release already exists
+        id: runtime_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RUNTIME_TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and publish runtime assets
+        if: steps.runtime_release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          workdir="$(mktemp -d)"
+          runtime_root="${workdir}/runtime"
+          desktop_mount="${workdir}/desktop-mount"
+          cli_extract="${workdir}/cli-extract"
+
+          mkdir -p "${runtime_root}/desktop-webview" "${runtime_root}/bin" "${desktop_mount}" "${cli_extract}"
+
+          download_asset() {
+            local pattern="$1"
+            local attempt
+            for attempt in 1 2 3; do
+              if gh release download "${UPSTREAM_TAG}" \
+                --repo "${UPSTREAM_REPO}" \
+                --pattern "${pattern}" \
+                --dir "${workdir}"; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep 3
+              fi
+            done
+            echo "Failed to download ${pattern} from ${UPSTREAM_REPO}@${UPSTREAM_TAG}" >&2
+            return 1
+          }
+
+          download_asset "${DESKTOP_ASSET}"
+          download_asset "${CODEX_ASSET}"
+
+          desktop_archive="${workdir}/${DESKTOP_ASSET}"
+          cli_archive="${workdir}/${CODEX_ASSET}"
+
+          hdiutil attach "${desktop_archive}" -nobrowse -mountpoint "${desktop_mount}" >/dev/null
+          trap 'hdiutil detach "${desktop_mount}" >/dev/null 2>&1 || true' EXIT
+
+          codex_app_path="$(find "${desktop_mount}" -maxdepth 3 -path '*/Codex.app' | head -n 1)"
+          if [ -z "${codex_app_path}" ]; then
+            echo "Failed to find Codex.app in mounted DMG" >&2
+            exit 1
+          fi
+
+          asar_path="${codex_app_path}/Contents/Resources/app.asar"
+          if [ ! -f "${asar_path}" ]; then
+            echo "Failed to find Codex.app/Contents/Resources/app.asar in mounted DMG" >&2
+            exit 1
+          fi
+
+          npx --yes asar extract "${asar_path}" "${workdir}/asar"
+          if [ ! -f "${workdir}/asar/webview/index.html" ]; then
+            echo "Extracted app.asar does not contain webview/index.html" >&2
+            exit 1
+          fi
+          cp -R "${workdir}/asar/webview/." "${runtime_root}/desktop-webview/"
+
+          tar -xzf "${cli_archive}" -C "${cli_extract}"
+          cli_binary="$(find "${cli_extract}" -type f -name codex | head -n 1)"
+          if [ -z "${cli_binary}" ]; then
+            echo "Failed to find codex binary in ${CODEX_ASSET}" >&2
+            exit 1
+          fi
+          cp "${cli_binary}" "${runtime_root}/bin/codex"
+          chmod +x "${runtime_root}/bin/codex"
+
+          desktop_sha="$(tar -cf - -C "${runtime_root}" desktop-webview | shasum -a 256 | awk '{print $1}')"
+          app_server_sha="$(shasum -a 256 "${runtime_root}/bin/codex" | awk '{print $1}')"
+
+          cat > "${workdir}/runtime-manifest.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "runtimeId": "${RUNTIME_ID}",
+            "runtimeVersion": "${RUNTIME_VERSION}",
+            "platform": "${PLATFORM}",
+            "patchSchemaVersion": ${PATCH_SCHEMA_VERSION},
+            "upstreamRelease": {
+              "repo": "${UPSTREAM_REPO}",
+              "tag": "${UPSTREAM_TAG}"
+            },
+            "desktopWebview": {
+              "source": "${DESKTOP_SOURCE}",
+              "version": "${DESKTOP_VERSION}",
+              "asset": "${DESKTOP_ASSET}",
+              "path": "desktop-webview",
+              "sha256": "${desktop_sha}"
+            },
+            "appServer": {
+              "source": "${CODEX_SOURCE}",
+              "version": "${CODEX_VERSION}",
+              "asset": "${CODEX_ASSET}",
+              "path": "bin/codex",
+              "sha256": "${app_server_sha}"
+            }
+          }
+          EOF
+
+          tar -czf "${workdir}/runtime-${PLATFORM}.tar.gz" -C "${runtime_root}" .
+
+          gh release create "${RUNTIME_TAG}" \
+            --title "Runtime ${RUNTIME_ID}" \
+            --notes "Pinned runtime assets for codex-bridge (${PLATFORM})." \
+            "${workdir}/runtime-manifest.json#runtime-manifest-${PLATFORM}.json" \
+            "${workdir}/runtime-${PLATFORM}.tar.gz#runtime-${PLATFORM}.tar.gz"
+
+      - name: Resolve bridge tag
+        id: bridge_tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            bridge_tag="${{ github.event.release.tag_name }}"
+          else
+            bridge_tag="${{ github.event.inputs.bridge_tag }}"
+          fi
+          if [ -z "${bridge_tag}" ]; then
+            echo "has_bridge_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "has_bridge_release=true" >> "${GITHUB_OUTPUT}"
+          echo "bridge_tag=${bridge_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Write bridge release runtime pointer manifest
+        if: steps.bridge_tag.outputs.has_bridge_release == 'true'
+        run: |
+          set -euo pipefail
+          outdir="$(mktemp -d)"
+          node apps/bridge/scripts/runtime_release.mjs write-bridge-manifest \
+            --lock "${LOCK_FILE}" \
+            --platform "${PLATFORM}" \
+            --bridge-version "${{ steps.bridge_tag.outputs.bridge_tag }}" \
+            --runtime-repo "${{ github.repository }}" \
+            --output "${outdir}/bridge-runtime-manifest-${PLATFORM}.json"
+          echo "BRIDGE_POINTER_MANIFEST=${outdir}/bridge-runtime-manifest-${PLATFORM}.json" >> "${GITHUB_ENV}"
+
+      - name: Upload runtime pointer manifest to bridge release
+        if: steps.bridge_tag.outputs.has_bridge_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.bridge_tag.outputs.bridge_tag }}" \
+            "${BRIDGE_POINTER_MANIFEST}#bridge-runtime-manifest-${PLATFORM}.json" \
+            --clobber

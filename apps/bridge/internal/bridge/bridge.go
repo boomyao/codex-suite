@@ -4,18 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/boomyao/codex-bridge/internal/auth"
+	"github.com/boomyao/codex-bridge/internal/exposure"
 	"github.com/gorilla/websocket"
 )
 
-var DirectRPCMethods = map[string]struct{}{
+var UpstreamDirectRPCMethods = map[string]struct{}{
 	"account/read":            {},
 	"account/rateLimits/read": {},
 	"app/list":                {},
@@ -25,6 +31,62 @@ var DirectRPCMethods = map[string]struct{}{
 	"model/list":              {},
 	"skills/list":             {},
 	"thread/list":             {},
+}
+
+var LocalDirectRPCMethods = map[string]struct{}{
+	"active-workspace-roots":              {},
+	"account-info":                        {},
+	"codex-home":                          {},
+	"developer-instructions":              {},
+	"extension-info":                      {},
+	"fast-mode-rollout-metrics":           {},
+	"get-configuration":                   {},
+	"get-copilot-api-proxy-info":          {},
+	"get-global-state":                    {},
+	"gh-cli-status":                       {},
+	"gh-pr-status":                        {},
+	"has-custom-cli-executable":           {},
+	"hotkey-window-hotkey-state":          {},
+	"ide-context":                         {},
+	"inbox-items":                         {},
+	"is-copilot-api-available":            {},
+	"list-automations":                    {},
+	"list-pending-automation-run-threads": {},
+	"list-pinned-threads":                 {},
+	"local-custom-agents":                 {},
+	"local-environments":                  {},
+	"locale-info":                         {},
+	"mcp-codex-config":                    {},
+	"open-in-targets":                     {},
+	"os-info":                             {},
+	"paths-exist":                         {},
+	"recommended-skills":                  {},
+	"remote-workspace-directory-entries":  {},
+	"set-configuration":                   {},
+	"set-global-state":                    {},
+	"set-pinned-threads-order":            {},
+	"set-thread-pinned":                   {},
+	"thread-terminal-snapshot":            {},
+	"git-origins":                         {},
+	"workspace-root-options":              {},
+	"worktree-shell-environment-config":   {},
+}
+
+var DirectRPCMethods = func() map[string]struct{} {
+	methods := make(map[string]struct{}, len(UpstreamDirectRPCMethods)+len(LocalDirectRPCMethods))
+	for method := range UpstreamDirectRPCMethods {
+		methods[method] = struct{}{}
+	}
+	for method := range LocalDirectRPCMethods {
+		methods[method] = struct{}{}
+	}
+	return methods
+}()
+
+type localDirectRPCState struct {
+	mu                 sync.Mutex
+	configurationState map[string]any
+	pinnedThreadIDs    []string
 }
 
 type Config struct {
@@ -46,6 +108,18 @@ type Info struct {
 	BridgeWebSocketURL string
 	BridgeReadyURL     string
 	AppServerWebSocket string
+}
+
+type RuntimeStatus struct {
+	Mode                  string `json:"mode"`
+	Ready                 bool   `json:"ready"`
+	AppServerWebSocketURL string `json:"appServerWebSocketUrl"`
+}
+
+type ExposureStatus struct {
+	Mode    string            `json:"mode"`
+	Ready   bool              `json:"ready"`
+	Session *exposure.Session `json:"session,omitempty"`
 }
 
 type healthState struct {
@@ -72,6 +146,12 @@ type Bridge struct {
 	upgrader    websocket.Upgrader
 	closeOnce   sync.Once
 	mu          sync.Mutex
+	localState  *localDirectRPCState
+	info        *Info
+	runtime     RuntimeStatus
+	exposure    ExposureStatus
+	auth        auth.State
+	authorizer  auth.Authorizer
 }
 
 func New(config Config, logger *log.Logger) *Bridge {
@@ -102,6 +182,18 @@ func New(config Config, logger *log.Logger) *Bridge {
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(*http.Request) bool { return true },
 		},
+		localState: &localDirectRPCState{
+			configurationState: map[string]any{},
+			pinnedThreadIDs:    []string{},
+		},
+		exposure: ExposureStatus{
+			Mode:  "none",
+			Ready: false,
+		},
+		auth: auth.State{
+			Mode: "none",
+		},
+		authorizer: auth.NewNoopAuthorizer(),
 	}
 }
 
@@ -143,6 +235,9 @@ func (b *Bridge) Start(ctx context.Context) (*Info, error) {
 		BridgeReadyURL:     httpURL + b.config.ReadyPath,
 		AppServerWebSocket: b.config.UpstreamURL,
 	}
+	b.mu.Lock()
+	b.info = info
+	b.mu.Unlock()
 
 	b.logger.Printf("%s [codex-bridge] listening on %s", nowISO(), httpURL)
 	b.logger.Printf("%s [codex-bridge] websocket proxying to %s", nowISO(), b.config.UpstreamURL)
@@ -157,6 +252,106 @@ func (b *Bridge) Start(ctx context.Context) (*Info, error) {
 	return info, nil
 }
 
+func (b *Bridge) SetRuntimeStatus(status RuntimeStatus) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.runtime = status
+}
+
+func (b *Bridge) SetExposureStatus(mode string, session *exposure.Session) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.exposure = ExposureStatus{
+		Mode:    mode,
+		Ready:   session != nil && session.Status == "ready",
+		Session: session,
+	}
+}
+
+func (b *Bridge) SetAuthState(state auth.State) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.auth = state
+}
+
+func (b *Bridge) SetAuthorizer(authorizer auth.Authorizer) {
+	if authorizer == nil {
+		authorizer = auth.NewNoopAuthorizer()
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.authorizer = authorizer
+	b.auth = authorizer.State()
+}
+
+func (b *Bridge) snapshotStatus() (RuntimeStatus, ExposureStatus, auth.State, *Info) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	runtimeStatus := b.runtime
+	exposureStatus := b.exposure
+	authState := b.auth
+	var info *Info
+	if b.info != nil {
+		copy := *b.info
+		info = &copy
+	}
+	return runtimeStatus, exposureStatus, authState, info
+}
+
+func buildConnectionTarget(exposureStatus ExposureStatus, info *Info) map[string]any {
+	gatewayEndpoint := ""
+	if info != nil {
+		gatewayEndpoint = info.BridgeWebSocketURL
+	}
+
+	recommendedEndpoint := gatewayEndpoint
+	source := "gateway"
+	if exposureStatus.Ready && exposureStatus.Session != nil && strings.TrimSpace(exposureStatus.Session.ReachableWS) != "" {
+		recommendedEndpoint = exposureStatus.Session.ReachableWS
+		source = exposureStatus.Mode
+	}
+
+	payload := map[string]any{
+		"recommendedServerEndpoint": recommendedEndpoint,
+		"source":                    source,
+		"gatewayServerEndpoint":     gatewayEndpoint,
+	}
+	if exposureStatus.Session != nil {
+		payload["exposureServerEndpoint"] = exposureStatus.Session.ReachableWS
+		payload["exposureHttpUrl"] = exposureStatus.Session.ReachableHTTP
+	}
+	return payload
+}
+
+func (b *Bridge) handleAuthHTTP(w http.ResponseWriter, r *http.Request) bool {
+	b.mu.Lock()
+	authorizer := b.authorizer
+	b.mu.Unlock()
+	if authorizer == nil {
+		return false
+	}
+	return authorizer.HandleHTTP(w, r)
+}
+
+func (b *Bridge) requireAuthorization(w http.ResponseWriter, r *http.Request) bool {
+	b.mu.Lock()
+	authorizer := b.authorizer
+	b.mu.Unlock()
+	if authorizer == nil {
+		return true
+	}
+	if err := authorizer.AuthorizeRequest(r); err != nil {
+		if errors.Is(err, auth.ErrUnauthorized) {
+			sendJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "Unauthorized"})
+			return false
+		}
+		sendJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return false
+	}
+	return true
+}
+
 func (b *Bridge) Close(ctx context.Context) error {
 	var err error
 	b.closeOnce.Do(func() {
@@ -168,9 +363,20 @@ func (b *Bridge) Close(ctx context.Context) error {
 }
 
 func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if b.handleAuthHTTP(w, r) {
+		return
+	}
+	if r.URL.Path == "/auth/session" {
+		b.handleAuthSession(w, r)
+		return
+	}
+
 	if websocket.IsWebSocketUpgrade(r) {
 		if b.config.HealthEnabled && (r.URL.Path == b.config.HealthPath || r.URL.Path == b.config.ReadyPath) {
 			http.NotFound(w, r)
+			return
+		}
+		if !b.requireAuthorization(w, r) {
 			return
 		}
 		b.handleWebSocketProxy(w, r)
@@ -178,10 +384,19 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Path == "/codex-mobile/rpc" {
+		if !b.requireAuthorization(w, r) {
+			return
+		}
 		b.handleDirectRPC(w, r)
 		return
 	}
+	if b.handleWhamStub(w, r) {
+		return
+	}
 	if b.handleMobilePreload(w, r) {
+		return
+	}
+	if b.handleLocalAuthPage(w, r) {
 		return
 	}
 	if b.handleUIAsset(w, r) {
@@ -196,14 +411,22 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/", "/status":
 		readiness := b.getUpstreamReadiness(r.Context(), false)
+		runtimeStatus, exposureStatus, authState, info := b.snapshotStatus()
+		gatewayStatus := map[string]any{
+			"host":          b.config.Host,
+			"port":          b.config.Port,
+			"uptimeMs":      time.Since(b.healthState.startedAt).Milliseconds(),
+			"websocketPath": "/",
+		}
+		if info != nil {
+			gatewayStatus["httpUrl"] = info.BridgeHTTPURL
+			gatewayStatus["webSocketUrl"] = info.BridgeWebSocketURL
+			gatewayStatus["readyUrl"] = info.BridgeReadyURL
+		}
 		sendJSON(w, http.StatusOK, map[string]any{
-			"ok": true,
-			"bridge": map[string]any{
-				"host":          b.config.Host,
-				"port":          b.config.Port,
-				"uptimeMs":      time.Since(b.healthState.startedAt).Milliseconds(),
-				"websocketPath": "/",
-			},
+			"ok":      true,
+			"runtime": runtimeStatus,
+			"gateway": gatewayStatus,
 			"upstream": map[string]any{
 				"url":        b.config.UpstreamURL,
 				"ready":      readiness.OK,
@@ -211,11 +434,24 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 				"durationMs": readiness.DurationMS,
 				"error":      emptyToNil(readiness.Error),
 			},
+			"exposure": exposureStatus,
+			"auth":     authState,
 			"healthPaths": map[string]any{
 				"health": b.config.HealthPath,
 				"ready":  b.config.ReadyPath,
 			},
-			"ui": b.uiStatus(),
+			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
+			"ui":            b.uiStatus(),
+		})
+		return
+	case "/codex-mobile/connect":
+		_, exposureStatus, authState, info := b.snapshotStatus()
+		sendJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"connection":    buildConnectionTarget(exposureStatus, info),
+			"auth":          authState,
+			"exposure":      exposureStatus,
+			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
 		})
 		return
 	}
@@ -238,13 +474,21 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 		if readiness.OK {
 			status = http.StatusOK
 		}
+		runtimeStatus, exposureStatus, authState, info := b.snapshotStatus()
+		gatewayStatus := map[string]any{
+			"host":     b.config.Host,
+			"port":     b.config.Port,
+			"uptimeMs": time.Since(b.healthState.startedAt).Milliseconds(),
+		}
+		if info != nil {
+			gatewayStatus["httpUrl"] = info.BridgeHTTPURL
+			gatewayStatus["webSocketUrl"] = info.BridgeWebSocketURL
+			gatewayStatus["readyUrl"] = info.BridgeReadyURL
+		}
 		sendJSON(w, status, map[string]any{
-			"ok": readiness.OK,
-			"bridge": map[string]any{
-				"host":     b.config.Host,
-				"port":     b.config.Port,
-				"uptimeMs": time.Since(b.healthState.startedAt).Milliseconds(),
-			},
+			"ok":      readiness.OK,
+			"runtime": runtimeStatus,
+			"gateway": gatewayStatus,
 			"upstream": map[string]any{
 				"url":        b.config.UpstreamURL,
 				"ready":      readiness.OK,
@@ -252,11 +496,62 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 				"durationMs": readiness.DurationMS,
 				"error":      emptyToNil(readiness.Error),
 			},
+			"exposure": exposureStatus,
+			"auth":     authState,
 		})
 		return
 	}
 
 	sendText(w, http.StatusNotFound, "Not Found\n")
+}
+
+func (b *Bridge) handleAuthSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		sendText(w, http.StatusMethodNotAllowed, "Method Not Allowed\n")
+		return
+	}
+
+	_, _, authState, _ := b.snapshotStatus()
+
+	b.mu.Lock()
+	authorizer := b.authorizer
+	b.mu.Unlock()
+	if authorizer == nil {
+		authorizer = auth.NewNoopAuthorizer()
+	}
+	session := authorizer.DescribeRequest(r)
+
+	if !session.Authorized {
+		statusCode := http.StatusInternalServerError
+		errorMessage := "Unauthorized"
+		if session.Reason != "" {
+			errorMessage = session.Reason
+		}
+		if session.Reason == "missing_token" || session.Reason == "unknown_token" || session.Reason == "pending_approval" || session.Reason == "revoked" {
+			statusCode = http.StatusUnauthorized
+		}
+		sendJSON(w, statusCode, map[string]any{
+			"ok":            false,
+			"authorized":    session.Authorized,
+			"reason":        emptyToNil(session.Reason),
+			"deviceId":      emptyToNil(session.DeviceID),
+			"deviceName":    emptyToNil(session.DeviceName),
+			"auth":          authState,
+			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
+			"error":         errorMessage,
+		})
+		return
+	}
+
+	sendJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"authorized":    session.Authorized,
+		"reason":        emptyToNil(session.Reason),
+		"deviceId":      emptyToNil(session.DeviceID),
+		"deviceName":    emptyToNil(session.DeviceName),
+		"auth":          authState,
+		"localAuthPage": emptyToNil(localAuthPageURL(authState)),
+	})
 }
 
 func (b *Bridge) handleDirectRPC(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +574,13 @@ func (b *Bridge) handleDirectRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startedAt := time.Now()
+	if _, ok := LocalDirectRPCMethods[payload.Method]; ok {
+		result := b.performLocalDirectRPC(payload.Method, payload.Params)
+		b.logger.Printf("%s [codex-bridge] direct rpc local %s %dms", nowISO(), payload.Method, time.Since(startedAt).Milliseconds())
+		sendJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+		return
+	}
+
 	result, err := performUpstreamRPC(r.Context(), b.config, payload.Method, payload.Params)
 	if err != nil {
 		b.logger.Printf("%s [codex-bridge] direct rpc failed %s %v", nowISO(), payload.Method, err)
@@ -288,6 +590,422 @@ func (b *Bridge) handleDirectRPC(w http.ResponseWriter, r *http.Request) {
 
 	b.logger.Printf("%s [codex-bridge] direct rpc %s %dms", nowISO(), payload.Method, time.Since(startedAt).Milliseconds())
 	sendJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
+func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any {
+	switch method {
+	case "get-global-state":
+		key, _ := stringParam(params, "key")
+		state, err := b.loadGlobalState()
+		if err != nil {
+			b.logger.Printf("%s [codex-bridge] failed to load global state: %v", nowISO(), err)
+			return map[string]any{"value": nil}
+		}
+		return map[string]any{"value": state[key]}
+	case "set-global-state":
+		key, _ := stringParam(params, "key")
+		if key == "" {
+			return map[string]any{"success": false}
+		}
+		b.localState.mu.Lock()
+		defer b.localState.mu.Unlock()
+		state, err := b.loadGlobalStateLocked()
+		if err != nil {
+			b.logger.Printf("%s [codex-bridge] failed to load global state for update: %v", nowISO(), err)
+			return map[string]any{"success": false}
+		}
+		if value, ok := params["value"]; ok {
+			state[key] = value
+		} else {
+			delete(state, key)
+		}
+		if err := saveGlobalStateFile(globalStateFilePath(), state); err != nil {
+			b.logger.Printf("%s [codex-bridge] failed to save global state: %v", nowISO(), err)
+			return map[string]any{"success": false}
+		}
+		return map[string]any{"success": true}
+	case "get-configuration":
+		key, _ := stringParam(params, "key")
+		b.localState.mu.Lock()
+		value, ok := b.localState.configurationState[key]
+		b.localState.mu.Unlock()
+		if !ok {
+			value = nil
+		}
+		return map[string]any{"value": value}
+	case "set-configuration":
+		key, _ := stringParam(params, "key")
+		if key == "" {
+			return map[string]any{"success": false}
+		}
+		b.localState.mu.Lock()
+		if value, ok := params["value"]; ok {
+			b.localState.configurationState[key] = value
+		} else {
+			delete(b.localState.configurationState, key)
+		}
+		b.localState.mu.Unlock()
+		return map[string]any{"success": true}
+	case "list-pinned-threads":
+		b.localState.mu.Lock()
+		threadIDs := append([]string(nil), b.localState.pinnedThreadIDs...)
+		b.localState.mu.Unlock()
+		return map[string]any{"threadIds": threadIDs}
+	case "set-thread-pinned":
+		threadID, _ := stringParam(params, "threadId")
+		if threadID == "" {
+			return map[string]any{"success": false, "threadIds": []string{}}
+		}
+		pinned, _ := boolParam(params, "pinned")
+		b.localState.mu.Lock()
+		nextThreadIDs := append([]string(nil), b.localState.pinnedThreadIDs...)
+		if pinned {
+			nextThreadIDs = appendUniqueStrings(nextThreadIDs, threadID)
+		} else {
+			nextThreadIDs = filterStringValue(nextThreadIDs, threadID)
+		}
+		b.localState.pinnedThreadIDs = nextThreadIDs
+		b.localState.mu.Unlock()
+		return map[string]any{"success": true, "threadIds": nextThreadIDs}
+	case "set-pinned-threads-order":
+		threadIDs := uniqueStringSlice(anySliceParam(params, "threadIds"))
+		b.localState.mu.Lock()
+		b.localState.pinnedThreadIDs = append([]string(nil), threadIDs...)
+		b.localState.mu.Unlock()
+		return map[string]any{"success": true, "threadIds": threadIDs}
+	case "extension-info":
+		return map[string]any{
+			"version":     "26.323.20928",
+			"buildFlavor": "prod",
+			"buildNumber": "1173",
+		}
+	case "is-copilot-api-available":
+		return map[string]any{"available": false}
+	case "account-info":
+		return map[string]any{"plan": nil, "accountId": nil}
+	case "list-pending-automation-run-threads":
+		return map[string]any{"threadIds": []string{}}
+	case "inbox-items":
+		return map[string]any{"items": []any{}}
+	case "list-automations":
+		return map[string]any{"items": []any{}}
+	case "local-environments":
+		return map[string]any{"environments": []any{}}
+	case "open-in-targets":
+		return map[string]any{"targets": []any{}}
+	case "gh-cli-status":
+		return map[string]any{"isInstalled": false, "isAuthenticated": false}
+	case "gh-pr-status":
+		return map[string]any{
+			"status":    "success",
+			"hasOpenPr": false,
+			"isDraft":   false,
+			"url":       nil,
+			"canMerge":  false,
+			"ciStatus":  nil,
+		}
+	case "recommended-skills":
+		return map[string]any{"skills": []any{}, "error": nil}
+	case "ide-context":
+		return map[string]any{"status": "disconnected", "connected": false, "context": nil}
+	case "local-custom-agents":
+		return map[string]any{"agents": []any{}}
+	case "hotkey-window-hotkey-state":
+		return map[string]any{"supported": false, "configuredHotkey": nil, "state": nil}
+	case "fast-mode-rollout-metrics":
+		return map[string]any{"enabled": true, "estimatedSavedMs": 0, "rolloutCountWithCompletedTurns": 0}
+	case "os-info":
+		return map[string]any{
+			"platform":  runtime.GOOS,
+			"isMacOS":   runtime.GOOS == "darwin",
+			"isWindows": runtime.GOOS == "windows",
+			"isLinux":   runtime.GOOS == "linux",
+		}
+	case "locale-info":
+		locale := localeFromEnvironment()
+		return map[string]any{"ideLocale": locale, "systemLocale": locale}
+	case "active-workspace-roots":
+		return map[string]any{"roots": b.activeWorkspaceRoots()}
+	case "workspace-root-options":
+		roots, activeRoots, labels := b.workspaceRootOptions()
+		return map[string]any{"roots": roots, "activeRoots": activeRoots, "labels": labels}
+	case "has-custom-cli-executable":
+		return map[string]any{"hasCustomCliExecutable": false}
+	case "get-copilot-api-proxy-info":
+		return nil
+	case "codex-home":
+		return map[string]any{"codexHome": deriveCodexHome(), "config": nil, "layers": []any{}, "origins": nil}
+	case "git-origins":
+		return map[string]any{"origins": []any{}}
+	case "paths-exist":
+		return map[string]any{"existingPaths": existingPaths(anySliceParam(params, "paths"))}
+	case "mcp-codex-config":
+		return map[string]any{"config": nil}
+	case "worktree-shell-environment-config":
+		return map[string]any{"shellEnvironment": nil}
+	case "developer-instructions":
+		value, _ := stringParam(params, "baseInstructions")
+		return map[string]any{"instructions": nullableString(value)}
+	case "thread-terminal-snapshot":
+		return map[string]any{
+			"session": map[string]any{
+				"cwd":       "",
+				"shell":     "unknown",
+				"buffer":    "",
+				"truncated": false,
+			},
+		}
+	case "remote-workspace-directory-entries":
+		directoryPath, _ := stringParam(params, "directoryPath")
+		return map[string]any{"directoryPath": directoryPath, "entries": []any{}}
+	default:
+		return nil
+	}
+}
+
+func stringParam(params map[string]any, key string) (string, bool) {
+	value, ok := params[key]
+	if !ok {
+		return "", false
+	}
+	text, ok := value.(string)
+	return text, ok
+}
+
+func boolParam(params map[string]any, key string) (bool, bool) {
+	value, ok := params[key]
+	if !ok {
+		return false, false
+	}
+	flag, ok := value.(bool)
+	return flag, ok
+}
+
+func anySliceParam(params map[string]any, key string) []any {
+	value, ok := params[key]
+	if !ok {
+		return nil
+	}
+	items, _ := value.([]any)
+	return items
+}
+
+func appendUniqueStrings(values []string, next string) []string {
+	for _, value := range values {
+		if value == next {
+			return values
+		}
+	}
+	return append(values, next)
+}
+
+func filterStringValue(values []string, target string) []string {
+	next := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != target {
+			next = append(next, value)
+		}
+	}
+	return next
+}
+
+func uniqueStringSlice(values []any) []string {
+	seen := make(map[string]struct{}, len(values))
+	next := make([]string, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		if _, exists := seen[text]; exists {
+			continue
+		}
+		seen[text] = struct{}{}
+		next = append(next, text)
+	}
+	return next
+}
+
+func deriveCodexHome() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return "~/.codex"
+	}
+	return filepath.Join(homeDir, ".codex")
+}
+
+func globalStateFilePath() string {
+	return filepath.Join(deriveCodexHome(), ".codex-global-state.json")
+}
+
+func (b *Bridge) loadGlobalState() (map[string]any, error) {
+	b.localState.mu.Lock()
+	defer b.localState.mu.Unlock()
+	return b.loadGlobalStateLocked()
+}
+
+func (b *Bridge) loadGlobalStateLocked() (map[string]any, error) {
+	return loadGlobalStateFile(globalStateFilePath())
+}
+
+func loadGlobalStateFile(path string) (map[string]any, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]any{}, nil
+		}
+		return nil, err
+	}
+	if len(bytes.TrimSpace(contents)) == 0 {
+		return map[string]any{}, nil
+	}
+	state := make(map[string]any)
+	if err := json.Unmarshal(contents, &state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+func saveGlobalStateFile(path string, state map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	contents, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	tempPath := fmt.Sprintf("%s.tmp.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(tempPath, contents, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
+}
+
+func (b *Bridge) activeWorkspaceRoots() []string {
+	state, err := b.loadGlobalState()
+	if err != nil {
+		b.logger.Printf("%s [codex-bridge] failed to load active workspace roots: %v", nowISO(), err)
+		return []string{}
+	}
+	return uniqueNonEmptyStrings(anyToStringSlice(state["active-workspace-roots"]))
+}
+
+func (b *Bridge) workspaceRootOptions() ([]string, []string, map[string]any) {
+	state, err := b.loadGlobalState()
+	if err != nil {
+		b.logger.Printf("%s [codex-bridge] failed to load workspace root options: %v", nowISO(), err)
+		return []string{}, []string{}, map[string]any{}
+	}
+	activeRoots := uniqueNonEmptyStrings(anyToStringSlice(state["active-workspace-roots"]))
+	roots := uniqueNonEmptyStrings(append(
+		append(anyToStringSlice(state["project-order"]), anyToStringSlice(state["electron-saved-workspace-roots"])...),
+		activeRoots...,
+	))
+	if len(roots) == 0 {
+		roots = activeRoots
+	}
+	labels := map[string]any{}
+	if value, ok := state["workspace-root-labels"].(map[string]any); ok {
+		for key, label := range value {
+			text, ok := label.(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				continue
+			}
+			labels[key] = text
+		}
+	}
+	return roots, activeRoots, labels
+}
+
+func localeFromEnvironment() string {
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		value := strings.TrimSpace(os.Getenv(key))
+		if value == "" {
+			continue
+		}
+		value = strings.SplitN(value, ".", 2)[0]
+		value = strings.ReplaceAll(value, "_", "-")
+		if value != "" && value != "C" && value != "POSIX" {
+			return value
+		}
+	}
+	return "en-US"
+}
+
+func existingPaths(values []any) []string {
+	seen := map[string]struct{}{}
+	next := make([]string, 0, len(values))
+	for _, value := range values {
+		path, ok := value.(string)
+		if !ok {
+			continue
+		}
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		next = append(next, path)
+	}
+	return next
+}
+
+func anyToStringSlice(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		next := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			next = append(next, text)
+		}
+		return next
+	default:
+		return nil
+	}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	next := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		next = append(next, value)
+	}
+	return next
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (b *Bridge) handleWebSocketProxy(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +1149,7 @@ func performUpstreamRPC(ctx context.Context, cfg Config, method string, params m
 		if nextState == "request" && numericID(payload["id"]) == 2 {
 			if errPayload, ok := payload["error"].(map[string]any); ok {
 				if message, ok := errPayload["message"].(string); ok && message != "" {
-					return nil, fmt.Errorf(message)
+					return nil, errors.New(message)
 				}
 				return nil, fmt.Errorf("upstream RPC failed")
 			}
