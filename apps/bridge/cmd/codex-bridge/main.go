@@ -47,6 +47,12 @@ const (
 	tailscaleKeysURL      = "https://login.tailscale.com/admin/settings/keys"
 )
 
+var (
+	bundledDesktopWebviewAppAsarPath = "/Applications/Codex.app/Contents/Resources/app.asar"
+	execLookPath                     = exec.LookPath
+	execCommandContext               = exec.CommandContext
+)
+
 type stringSliceFlag struct {
 	values []string
 }
@@ -1561,6 +1567,12 @@ func buildBridgeConfig(
 		return bridge.Config{}, err
 	}
 	if desktopWebviewRoot == "" {
+		desktopWebviewRoot, err = ensureBundledDesktopWebviewRoot(configPath)
+		if err != nil {
+			return bridge.Config{}, err
+		}
+	}
+	if desktopWebviewRoot == "" {
 		return bridge.Config{}, fmt.Errorf(
 			"no desktop webview bundle available; provide --desktop-webview-root, place desktop-webview assets next to the bridge binary, or activate a packaged runtime",
 		)
@@ -1719,6 +1731,84 @@ func resolveAppServerBinary(configured string) (string, error) {
 	return "", nil
 }
 
+func ensureBundledDesktopWebviewRoot(configPath string) (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", nil
+	}
+
+	asarPath, ok, err := resolveExistingFile(bundledDesktopWebviewAppAsarPath)
+	if err != nil || !ok {
+		return "", err
+	}
+	info, err := os.Stat(asarPath)
+	if err != nil {
+		return "", err
+	}
+
+	cacheRoot := filepath.Join(
+		bridgeDataDir(configPath),
+		"cache",
+		"upstream-desktop-webview",
+		fmt.Sprintf("%d-%d", info.Size(), info.ModTime().UTC().Unix()),
+	)
+	return extractBundledDesktopWebviewRoot(asarPath, cacheRoot)
+}
+
+func extractBundledDesktopWebviewRoot(asarPath string, cacheRoot string) (string, error) {
+	webviewRoot := filepath.Join(strings.TrimSpace(cacheRoot), "webview")
+	if root, ok, err := resolveExistingDirectory(webviewRoot); ok || err != nil {
+		return root, err
+	}
+
+	npxPath, err := execLookPath("npx")
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(cacheRoot), 0o755); err != nil {
+		return "", err
+	}
+
+	tempRoot := cacheRoot + ".tmp"
+	_ = os.RemoveAll(tempRoot)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	cmd := execCommandContext(ctx, npxPath, "--yes", "asar", "extract", asarPath, tempRoot)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.RemoveAll(tempRoot)
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("extract desktop webview from bundled Codex.app timed out: %w", ctx.Err())
+		}
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return "", fmt.Errorf("extract desktop webview from bundled Codex.app: %w", err)
+		}
+		return "", fmt.Errorf("extract desktop webview from bundled Codex.app: %w: %s", err, detail)
+	}
+
+	_, ok, err := resolveExistingDirectory(filepath.Join(tempRoot, "webview"))
+	if err != nil {
+		_ = os.RemoveAll(tempRoot)
+		return "", err
+	}
+	if !ok {
+		_ = os.RemoveAll(tempRoot)
+		return "", fmt.Errorf("bundled Codex.app archive does not contain webview/index.html")
+	}
+
+	_ = os.RemoveAll(cacheRoot)
+	if err := os.Rename(tempRoot, cacheRoot); err != nil {
+		_ = os.RemoveAll(tempRoot)
+		return "", err
+	}
+	return filepath.Join(cacheRoot, "webview"), nil
+}
+
 func preferredBundledAppServerBinary() string {
 	if runtime.GOOS != "darwin" {
 		return ""
@@ -1810,6 +1900,36 @@ func runtimePlatform() string {
 		arch = "x64"
 	}
 	return runtime.GOOS + "-" + arch
+}
+
+func bridgeDataDir(configPath string) string {
+	trimmed := strings.TrimSpace(configPath)
+	if trimmed == "" {
+		trimmed = config.DefaultConfigPath()
+	}
+	return filepath.Dir(trimmed)
+}
+
+func resolveExistingFile(path string) (string, bool, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	resolved, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if info.IsDir() {
+		return "", false, nil
+	}
+	return resolved, true, nil
 }
 
 func resolveExistingDirectory(path string) (string, bool, error) {

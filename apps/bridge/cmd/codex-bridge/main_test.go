@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -10,8 +11,6 @@ import (
 )
 
 func TestResolveDesktopWebviewRootPrefersConfiguredRoot(t *testing.T) {
-	t.Parallel()
-
 	tempDir := t.TempDir()
 	configuredRoot := filepath.Join(tempDir, "configured")
 	releaseRoot := filepath.Join(tempDir, "release-runtime")
@@ -29,8 +28,6 @@ func TestResolveDesktopWebviewRootPrefersConfiguredRoot(t *testing.T) {
 }
 
 func TestResolveDesktopWebviewRootUsesReleaseRuntimeWhenConfiguredRootMissing(t *testing.T) {
-	t.Parallel()
-
 	tempDir := t.TempDir()
 	releaseRoot := filepath.Join(tempDir, "release-runtime")
 	writeDesktopWebviewRoot(t, releaseRoot)
@@ -45,8 +42,6 @@ func TestResolveDesktopWebviewRootUsesReleaseRuntimeWhenConfiguredRootMissing(t 
 }
 
 func TestBuildBridgeConfigUsesReleaseRuntimeDesktopWebview(t *testing.T) {
-	t.Parallel()
-
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "bridge-config.json")
 	releaseRoot := filepath.Join(tempDir, "release-runtime")
@@ -70,11 +65,14 @@ func TestBuildBridgeConfigUsesReleaseRuntimeDesktopWebview(t *testing.T) {
 }
 
 func TestBuildBridgeConfigFailsWithoutAnyDesktopWebviewBundle(t *testing.T) {
-	t.Parallel()
-
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "bridge-config.json")
 	cfg := config.DefaultConfig()
+	previousAsarPath := bundledDesktopWebviewAppAsarPath
+	bundledDesktopWebviewAppAsarPath = filepath.Join(tempDir, "missing-app.asar")
+	t.Cleanup(func() {
+		bundledDesktopWebviewAppAsarPath = previousAsarPath
+	})
 
 	_, err := buildBridgeConfig(
 		cfg,
@@ -86,6 +84,54 @@ func TestBuildBridgeConfigFailsWithoutAnyDesktopWebviewBundle(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected missing desktop webview bundle error")
+	}
+}
+
+func TestExtractBundledDesktopWebviewRootUsesNpxAsarExtract(t *testing.T) {
+	tempDir := t.TempDir()
+	fixtureRoot := filepath.Join(tempDir, "fixture")
+	writeDesktopWebviewRoot(t, filepath.Join(fixtureRoot, "webview"))
+
+	fakeNpxPath := filepath.Join(tempDir, "fake-npx.sh")
+	if err := os.Setenv("CODEX_BRIDGE_TEST_FIXTURE_ROOT", fixtureRoot); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Unsetenv("CODEX_BRIDGE_TEST_FIXTURE_ROOT")
+	})
+	script := "#!/bin/sh\nset -eu\nmkdir -p \"$5\"\ncp -R \"$CODEX_BRIDGE_TEST_FIXTURE_ROOT/.\" \"$5\"\n"
+	if err := os.WriteFile(fakeNpxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	previousLookPath := execLookPath
+	previousCommandContext := execCommandContext
+	execLookPath = func(file string) (string, error) {
+		if file != "npx" {
+			return "", exec.ErrNotFound
+		}
+		return fakeNpxPath, nil
+	}
+	execCommandContext = exec.CommandContext
+	t.Cleanup(func() {
+		execLookPath = previousLookPath
+		execCommandContext = previousCommandContext
+	})
+
+	asarPath := filepath.Join(tempDir, "app.asar")
+	if err := os.WriteFile(asarPath, []byte("asar"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := extractBundledDesktopWebviewRoot(asarPath, filepath.Join(tempDir, "cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != filepath.Join(tempDir, "cache", "webview") {
+		t.Fatalf("expected extracted webview root, got %q", root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "index.html")); err != nil {
+		t.Fatalf("expected extracted index.html: %v", err)
 	}
 }
 
