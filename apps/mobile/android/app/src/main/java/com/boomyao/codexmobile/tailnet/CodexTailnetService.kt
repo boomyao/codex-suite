@@ -101,11 +101,13 @@ class CodexTailnetService : VpnService() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            Notification.Builder(this)
-        }
+        val builder =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION")
+                Notification.Builder(this)
+            }
         return builder
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(getString(R.string.tailnet_notification_title))

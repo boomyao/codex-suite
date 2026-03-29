@@ -22,6 +22,17 @@ data class PairingResponse(
     val approved: Boolean,
 )
 
+data class BridgeLoadTarget(
+    val baseUrl: String,
+    val usesLocalProxy: Boolean,
+)
+
+data class HttpProxyResponse(
+    val body: Any?,
+    val status: Int,
+    val headers: JSONObject,
+)
+
 data class BridgeBootstrapState(
     val persistedAtomState: JSONObject?,
     val workspaceRootOptions: List<String>,

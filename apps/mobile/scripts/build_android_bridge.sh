@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ANDROID_APP_DIR="${ROOT_DIR}/android/app"
-OUTPUT_DIR="${ANDROID_APP_DIR}/build/generated/jniLibs/arm64-v8a"
+OUTPUT_ROOT="${ANDROID_APP_DIR}/build/generated/jniLibs"
 
 find_ndk_root() {
   if [[ -n "${ANDROID_NDK_ROOT:-}" && -d "${ANDROID_NDK_ROOT}" ]]; then
@@ -34,6 +34,34 @@ find_toolchain_root() {
   ls -d "${base}"/* 2>/dev/null | head -1
 }
 
+build_bridge_for_abi() {
+  local abi="$1"
+  local goarch="$2"
+  local cc_bin="$3"
+  local output_dir="${OUTPUT_ROOT}/${abi}"
+
+  mkdir -p "${output_dir}"
+  if [[ ! -x "${cc_bin}" ]]; then
+    echo "Android compiler not found: ${cc_bin}" >&2
+    exit 1
+  fi
+
+  echo "==> building Go Android bridge for ${abi}"
+  (
+    cd "${ROOT_DIR}/mobilelib"
+    CGO_ENABLED=1 \
+    GOOS=android \
+    GOARCH="${goarch}" \
+    CC="${cc_bin}" \
+    go build \
+      -tags=with_gvisor,ts_omit_logtail,ts_omit_netlog \
+      -buildmode=c-shared \
+      -trimpath \
+      -o "${output_dir}/libcodexmobile.so" \
+      .
+  )
+}
+
 NDK_ROOT="$(find_ndk_root || true)"
 if [[ -z "${NDK_ROOT}" || ! -d "${NDK_ROOT}" ]]; then
   echo "Android NDK not found. Set ANDROID_SDK_ROOT/ANDROID_HOME or ANDROID_NDK_ROOT first." >&2
@@ -46,25 +74,12 @@ if [[ -z "${TOOLCHAIN_ROOT}" || ! -d "${TOOLCHAIN_ROOT}" ]]; then
   exit 1
 fi
 
-mkdir -p "${OUTPUT_DIR}"
+build_bridge_for_abi \
+  "arm64-v8a" \
+  "arm64" \
+  "${TOOLCHAIN_ROOT}/bin/aarch64-linux-android24-clang"
 
-CC_BIN="${TOOLCHAIN_ROOT}/bin/aarch64-linux-android24-clang"
-if [[ ! -x "${CC_BIN}" ]]; then
-  echo "Android compiler not found: ${CC_BIN}" >&2
-  exit 1
-fi
-
-echo "==> building Go Android bridge"
-(
-  cd "${ROOT_DIR}/mobilelib"
-  CGO_ENABLED=1 \
-  GOOS=android \
-  GOARCH=arm64 \
-  CC="${CC_BIN}" \
-  go build \
-    -tags=with_gvisor,ts_omit_logtail,ts_omit_netlog \
-    -buildmode=c-shared \
-    -trimpath \
-    -o "${OUTPUT_DIR}/libcodexmobile.so" \
-    .
-)
+build_bridge_for_abi \
+  "x86_64" \
+  "amd64" \
+  "${TOOLCHAIN_ROOT}/bin/x86_64-linux-android24-clang"

@@ -1,9 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
   <uses-permission android:name="android.permission.INTERNET"/>
   <uses-permission android:name="android.permission.CAMERA"/>
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+  <uses-feature
+      android:name="android.hardware.camera"
+      android:required="false"/>
   <queries>
     <intent>
       <action android:name="android.intent.action.VIEW"/>
@@ -11,8 +15,9 @@
       <data android:scheme="https"/>
     </intent>
   </queries>
-  <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:usesCleartextTraffic="true" android:enableOnBackInvokedCallback="false">
-    <activity android:name=".nativehost.NativeHostActivity" android:exported="true" android:theme="@style/Theme.App.SplashScreen" android:screenOrientation="portrait">
+  <application android:name=".MainApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:allowBackup="true" android:theme="@style/AppTheme" android:supportsRtl="true" android:usesCleartextTraffic="true">
+    <!-- Fixed portrait is a product constraint for the host surface. -->
+    <activity android:name=".nativehost.NativeHostActivity" android:exported="true" android:theme="@style/Theme.App.SplashScreen" android:screenOrientation="portrait" tools:ignore="LockedOrientationActivity,DiscouragedApi">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>
@@ -24,7 +29,7 @@
         <data android:scheme="codexmobile"/>
       </intent-filter>
     </activity>
-    <activity android:name=".nativehost.PortraitCaptureActivity" android:exported="false" android:screenOrientation="portrait"/>
+    <activity android:name=".nativehost.PortraitCaptureActivity" android:exported="false" android:screenOrientation="portrait" tools:ignore="LockedOrientationActivity,DiscouragedApi"/>
     <service android:name=".tailnet.CodexTailnetService" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE" android:foregroundServiceType="dataSync" android:stopWithTask="false">
       <intent-filter>
         <action android:name="android.net.VpnService"/>

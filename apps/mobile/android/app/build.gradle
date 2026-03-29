@@ -18,7 +18,7 @@ android {
         versionCode 1
         versionName "1.0.0"
         ndk {
-            abiFilters 'arm64-v8a'
+            abiFilters 'arm64-v8a', 'x86_64'
         }
     }
     signingConfigs {
@@ -84,10 +84,11 @@ android {
 }
 
 dependencies {
+    //noinspection GradleDependency -- AGP 8.5.0 cannot consume androidx.core 1.16+ yet.
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
-    implementation("androidx.webkit:webkit:1.13.0")
-    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.webkit:webkit:1.15.0")
+    implementation("com.google.android.material:material:1.13.0")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

@@ -30,12 +30,7 @@ class BridgeProfileStore(context: Context) {
         val now = System.currentTimeMillis()
         val profileToSave = profile.copy(lastUsedAtMillis = profile.lastUsedAtMillis ?: now)
         val profiles = list().toMutableList()
-        val existingIndex = profiles.indexOfFirst { it.id == profileToSave.id }
-        if (existingIndex >= 0) {
-            profiles.removeAt(existingIndex)
-        } else {
-            profiles.removeAll { it.id == profileToSave.id }
-        }
+        profiles.removeAll { it.id == profileToSave.id }
         profiles.add(0, profileToSave)
         persistProfiles(profiles, profileToSave.id)
     }

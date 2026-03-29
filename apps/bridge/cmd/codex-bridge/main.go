@@ -1057,13 +1057,22 @@ func buildStartupReport(bridgeServer *bridge.Bridge, authorizer auth.Authorizer,
 	}
 	report.MobileEnrollmentPayload = string(body)
 
-	qr, err := qrcode.New(string(body), qrcode.Medium)
+	qr, err := buildStartupMobileQR(body)
 	if err != nil {
 		report.MobileQRError = fmt.Sprintf("failed to build startup mobile QR: %v", err)
 		return report
 	}
-	report.MobileQR = qr.ToSmallString(false)
+	report.MobileQR = qr
 	return report
+}
+
+func buildStartupMobileQR(body []byte) (string, error) {
+	qr, err := qrcode.New(string(body), qrcode.Low)
+	if err != nil {
+		return "", err
+	}
+	qr.DisableBorder = true
+	return qr.ToSmallString(false), nil
 }
 
 func logStartupReport(logger *log.Logger, report startupReport) {

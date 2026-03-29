@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/nativeHostRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_native_host_window">
+    android:background="@drawable/bg_native_host_window"
+    tools:ignore="UselessParent">
 
     <LinearLayout
         android:id="@+id/nativeHostContent"
@@ -43,6 +45,7 @@
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:baselineAligned="false"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 android:paddingStart="16dp"
@@ -356,7 +359,6 @@
             android:layout_marginBottom="24dp"
             android:layout_weight="1"
             android:background="@drawable/bg_native_host_surface"
-            android:clipToOutline="true"
             android:elevation="6dp"
             android:outlineProvider="background">
 
@@ -474,7 +476,7 @@
                                 android:padding="0dp"
                                 app:backgroundTint="@color/nativeHostSurface"
                                 app:cornerRadius="20dp"
-                                app:icon="@drawable/ic_native_host_settings"
+                                app:icon="@android:drawable/ic_menu_manage"
                                 app:iconGravity="textStart"
                                 app:iconPadding="0dp"
                                 app:iconTint="@color/nativeHostTextSecondary"

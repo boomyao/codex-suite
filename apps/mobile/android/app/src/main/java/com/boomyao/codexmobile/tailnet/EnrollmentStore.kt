@@ -8,13 +8,6 @@ class EnrollmentStore(context: Context) {
     fun saveEnrollment(payload: TailnetEnrollmentPayload) {
         preferences.edit()
             .putString(KEY_RAW_ENROLLMENT, payload.rawPayload)
-            .putString(KEY_BRIDGE_ID, payload.bridgeId)
-            .putString(KEY_BRIDGE_NAME, payload.bridgeName)
-            .putString(KEY_BRIDGE_SERVER_ENDPOINT, payload.bridgeServerEndpoint)
-            .putString(KEY_CONTROL_URL, payload.controlUrl)
-            .putString(KEY_AUTH_KEY, payload.authKey)
-            .putString(KEY_HOSTNAME, payload.hostname)
-            .putString(KEY_LOGIN_MODE, payload.loginMode)
             .apply()
     }
 
@@ -67,13 +60,6 @@ class EnrollmentStore(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "codex_tailnet"
         private const val KEY_RAW_ENROLLMENT = "raw_enrollment"
-        private const val KEY_BRIDGE_ID = "bridge_id"
-        private const val KEY_BRIDGE_NAME = "bridge_name"
-        private const val KEY_BRIDGE_SERVER_ENDPOINT = "bridge_server_endpoint"
-        private const val KEY_CONTROL_URL = "control_url"
-        private const val KEY_AUTH_KEY = "auth_key"
-        private const val KEY_HOSTNAME = "hostname"
-        private const val KEY_LOGIN_MODE = "login_mode"
         private const val KEY_STATUS_STATE = "status_state"
         private const val KEY_STATUS_MODE = "status_mode"
         private const val KEY_STATUS_MESSAGE = "status_message"

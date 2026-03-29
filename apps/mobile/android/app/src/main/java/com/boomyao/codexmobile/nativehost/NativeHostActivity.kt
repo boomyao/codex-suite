@@ -5,9 +5,7 @@ import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
-import android.text.format.DateUtils
 import android.content.res.Configuration
-import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
@@ -29,38 +27,21 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import com.boomyao.codexmobile.R
-import com.boomyao.codexmobile.tailnet.CodexTailnetBridge
-import com.boomyao.codexmobile.tailnet.CodexTailnetService
-import com.boomyao.codexmobile.tailnet.EnrollmentStore
-import com.boomyao.codexmobile.tailnet.TailnetEnrollmentPayload
-import com.boomyao.codexmobile.tailnet.parseTailnetEnrollmentPayload
 import com.google.android.material.appbar.MaterialToolbar
-import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
 class NativeHostActivity : AppCompatActivity() {
     private companion object {
         private const val LOCAL_HOST_ID = "local"
         private const val HOME_SESSION_LIMIT = 2
-        private val DESKTOP_EXTENSION_INFO =
-            JSONObject()
-                .put("version", "26.323.20928")
-                .put("buildFlavor", "prod")
-                .put("buildNumber", "1173")
         private val LOCAL_HOST_CONFIG =
             JSONObject()
                 .put("id", LOCAL_HOST_ID)
@@ -76,38 +57,11 @@ class NativeHostActivity : AppCompatActivity() {
         private val UNHANDLED_LOCAL_METHOD = Any()
     }
 
-    private data class BridgeLoadTarget(
-        val baseUrl: String,
-        val usesLocalProxy: Boolean,
-    )
-
-    private data class HttpProxyResponse(
-        val body: Any?,
-        val status: Int,
-        val headers: JSONObject,
-    )
-
-    private data class HostStateSnapshot(
-        var account: Any? = null,
-        var rateLimit: Any? = null,
-        val workspaceRootOptions: MutableList<String> = mutableListOf(),
-        val activeWorkspaceRoots: MutableList<String> = mutableListOf(),
-        val workspaceRootLabels: MutableMap<String, String> = mutableMapOf(),
-        val pinnedThreadIds: MutableList<String> = mutableListOf(),
-    )
-
-    private enum class ShellChromeState {
+    enum class ShellChromeState {
         DISCONNECTED,
         LOADING,
         CONNECTED,
         ERROR,
-    }
-
-    private enum class ConnectionStage {
-        PAYLOAD_RECEIVED,
-        STARTING_TAILNET,
-        PAIRING_DEVICE,
-        OPENING_WORKSPACE,
     }
 
     private enum class ChipTone {
@@ -117,7 +71,7 @@ class NativeHostActivity : AppCompatActivity() {
         WARNING,
     }
 
-    private lateinit var rootContainer: View
+    private lateinit var rootContainer: ViewGroup
     private lateinit var toolbar: MaterialToolbar
     private lateinit var contentContainer: View
     private lateinit var sessionBarView: View
@@ -158,10 +112,11 @@ class NativeHostActivity : AppCompatActivity() {
     private lateinit var recentSessionsListView: LinearLayout
     private lateinit var profileStore: BridgeProfileStore
     private lateinit var preferencesStore: NativeHostPreferences
+    private lateinit var connectionSheetController: NativeHostConnectionSheetController
     private var activeProfile: BridgeProfile? = null
     private var activeLoadTarget: BridgeLoadTarget? = null
     private var chromeState = ShellChromeState.DISCONNECTED
-    private var currentConnectionStage: ConnectionStage? = null
+    private var currentConnectionStage: NativeHostConnectionStage? = null
     private var currentConnectionRequiresPairing = false
     private var currentStatusMessage = ""
     private var persistedAtomState = deepCopyJsonObject(DEFAULT_PERSISTED_ATOM_STATE)
@@ -173,11 +128,11 @@ class NativeHostActivity : AppCompatActivity() {
         "host_config" to deepCopyJsonObject(LOCAL_HOST_CONFIG),
     )
     private val sharedObjectSubscribers = linkedMapOf<String, Int>()
-    private val hostState = HostStateSnapshot()
-    private val pendingTurnCompletions = ConcurrentHashMap<String, String>()
-    private val activeTurnReconciliations = ConcurrentHashMap.newKeySet<String>()
-    private val emittedTurnCompletions = ConcurrentHashMap<String, String>()
-    private var appServerWebSocketClient: AppServerWebSocketClient? = null
+    private val sessionState = NativeHostSessionState()
+    private lateinit var webViewMessageRouter: NativeHostWebviewMessageRouter
+    private lateinit var backendRequestRouter: NativeHostBackendRequestRouter
+    private lateinit var connectionCoordinator: NativeHostConnectionCoordinator
+    private lateinit var appServerCoordinator: NativeHostAppServerCoordinator
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
         val contents = result.contents?.trim().orEmpty()
         if (contents.isEmpty()) {
@@ -237,6 +192,94 @@ class NativeHostActivity : AppCompatActivity() {
         recentSessionsTitleView = findViewById(R.id.nativeHostRecentSessionsTitle)
         recentSessionsBodyView = findViewById(R.id.nativeHostRecentSessionsBody)
         recentSessionsListView = findViewById(R.id.nativeHostRecentSessionsList)
+        webViewMessageRouter =
+            NativeHostWebviewMessageRouter(
+                activeProfileProvider = { activeProfile },
+                setStatus = ::setStatus,
+                sendPersistedAtomSync = ::sendPersistedAtomSync,
+                sendHostMessage = ::sendHostMessage,
+                sendBridgeResponse = ::sendBridgeResponse,
+                sendWorkerMessage = ::sendWorkerMessage,
+                openUrl = { url ->
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                },
+                broadcastSharedObjectUpdate = ::broadcastSharedObjectUpdate,
+                sharedObjects = sharedObjects,
+                sharedObjectSubscribers = sharedObjectSubscribers,
+                persistedAtomStateProvider = { persistedAtomState },
+                setPersistedAtomState = { persistedAtomState = it },
+                createDefaultPersistedAtomState = { deepCopyJsonObject(DEFAULT_PERSISTED_ATOM_STATE) },
+                toJsonCompatible = ::toJsonCompatible,
+                updateWorkspaceRoots = ::updateWorkspaceRoots,
+                setActiveWorkspaceRoot = ::setActiveWorkspaceRoot,
+                renameWorkspaceRoot = { root, label -> sessionState.renameWorkspaceRoot(root, label) },
+                onFetchMessage = { message -> backendRequestRouter.handleFetchMessage(message) },
+                onMcpRequestMessage = { message -> backendRequestRouter.handleMcpRequestMessage(message) },
+            )
+        appServerCoordinator =
+            NativeHostAppServerCoordinator(
+                hostId = LOCAL_HOST_ID,
+                sendHostMessage = ::sendHostMessage,
+                integrateDirectRpcResult = ::integrateDirectRpcResult,
+                logWarning = { message, error ->
+                    android.util.Log.w("CodexMobile", message, error)
+                },
+            )
+        connectionSheetController =
+            NativeHostConnectionSheetController(
+                context = this,
+                profileStore = profileStore,
+                activeProfileProvider = { activeProfile },
+                isConnectedProvider = { chromeState == ShellChromeState.CONNECTED },
+                isLoadingProvider = { chromeState == ShellChromeState.LOADING },
+                isErrorProvider = { chromeState == ShellChromeState.ERROR },
+                currentStatusMessageProvider = { currentStatusMessage },
+                currentConnectionStageProvider = { currentConnectionStage },
+                activateProfile = ::activateProfile,
+                reloadActiveBridge = ::reloadActiveBridge,
+                openScanner = ::openScanner,
+                resetEnrollment = { profile -> connectionCoordinator.resetEnrollment(profile) },
+            )
+        backendRequestRouter =
+            NativeHostBackendRequestRouter(
+                hostId = LOCAL_HOST_ID,
+                activeProfileProvider = { activeProfile },
+                activeLoadTargetProvider = { activeLoadTarget },
+                resolveBridgeLoadTarget = ::resolveBridgeLoadTarget,
+                resolveFetchMethodPayload = ::resolveFetchMethodPayload,
+                unhandledLocalMethod = UNHANDLED_LOCAL_METHOD,
+                sendHostMessage = ::sendHostMessage,
+                performAppServerMcpRequest = { loadTarget, authToken, method, params ->
+                    appServerCoordinator.performRequest(loadTarget, authToken, method, params)
+                },
+                resetAppServerWebSocketClient = { appServerCoordinator.reset() },
+                integrateDirectRpcResult = ::integrateDirectRpcResult,
+                rememberPendingTurnCompletion = { threadId, turnId ->
+                    appServerCoordinator.rememberPendingTurnCompletion(threadId, turnId)
+                },
+                scheduleTurnCompletionFallback = { threadId, turnId, loadTarget, authToken ->
+                    appServerCoordinator.scheduleTurnCompletionFallback(threadId, turnId, loadTarget, authToken)
+                },
+                reconcileThreadSnapshotIfNeeded = { method, result, loadTarget, authToken ->
+                    appServerCoordinator.reconcileThreadSnapshotIfNeeded(method, result, loadTarget, authToken)
+                },
+                normalizeErrorMessage = ::normalizeErrorMessage,
+            )
+        connectionCoordinator =
+            NativeHostConnectionCoordinator(
+                context = applicationContext,
+                profileStore = profileStore,
+                activeProfileProvider = { activeProfile },
+                openBridge = ::openBridge,
+                renderEmptyState = ::renderEmptyState,
+                setStatus = ::setStatus,
+                updateConnectionProgress = ::updateConnectionProgress,
+                syncSavedConnectionsState = ::syncSavedConnectionsState,
+                normalizeErrorMessage = ::normalizeErrorMessage,
+            )
+        workspaceFrameView.clipToOutline = true
         (workspaceFrameView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
             workspaceFrameMarginStart = params.marginStart
             workspaceFrameMarginTop = params.topMargin
@@ -274,12 +317,12 @@ class NativeHostActivity : AppCompatActivity() {
         applyWindowInsets()
         configureWebView()
         renderDisconnectedChrome(getString(R.string.native_host_status_idle))
-        restoreTailnetRuntimeIfNeeded()
+        connectionCoordinator.restoreTailnetRuntimeIfNeeded()
         loadSavedProfile()
     }
 
     override fun onDestroy() {
-        resetAppServerWebSocketClient()
+        appServerCoordinator.reset()
         super.onDestroy()
     }
 
@@ -375,38 +418,16 @@ class NativeHostActivity : AppCompatActivity() {
         renderDisconnectedChrome(getString(R.string.native_host_status_idle))
     }
 
-    private fun restoreTailnetRuntimeIfNeeded() {
-        val profile = profileStore.readActive() ?: return
-        val enrollmentPayload = profile.tailnetEnrollmentPayload?.trim().orEmpty()
-        if (enrollmentPayload.isEmpty()) {
-            return
-        }
-        val enrollment = runCatching { parseTailnetEnrollmentPayload(enrollmentPayload) }.getOrNull() ?: return
-        val snapshot = CodexTailnetBridge.status(applicationContext)
-        if (snapshot.state == "running") {
-            return
-        }
-        android.util.Log.i(
-            "CodexMobile",
-            "restoreTailnetRuntimeIfNeeded starting service state=${snapshot.state} message=${snapshot.message}",
-        )
-        ContextCompat.startForegroundService(
-            this,
-            CodexTailnetService.startIntent(this, enrollment.rawPayload),
-        )
+    private fun reloadActiveBridge() {
+        connectionCoordinator.reloadActiveBridge()
     }
 
-    private fun reloadActiveBridge() {
-        val profile = activeProfile
-        if (profile == null) {
-            renderEmptyState(getString(R.string.native_host_status_idle))
-            return
-        }
-        openBridge(profile)
+    private fun resolveBridgeLoadTarget(profile: BridgeProfile): BridgeLoadTarget {
+        return connectionCoordinator.resolveBridgeLoadTarget(profile)
     }
 
     private fun openBridge(profile: BridgeProfile) {
-        resetAppServerWebSocketClient()
+        appServerCoordinator.reset()
         activeProfile = profile
         activeLoadTarget = null
         syncSavedConnectionsState()
@@ -414,7 +435,7 @@ class NativeHostActivity : AppCompatActivity() {
             updateConnectionProgress(
                 profileName = profile.name,
                 endpoint = profile.serverEndpoint,
-                stage = ConnectionStage.OPENING_WORKSPACE,
+                stage = NativeHostConnectionStage.OPENING_WORKSPACE,
                 requiresPairing = false,
             )
         }
@@ -423,7 +444,7 @@ class NativeHostActivity : AppCompatActivity() {
         val generation = ++bridgeLoadGeneration
         thread {
             try {
-                val loadTarget = resolveBridgeLoadTarget(profile)
+                val loadTarget = connectionCoordinator.resolveBridgeLoadTarget(profile)
                 val bootstrapState =
                     runCatching {
                         hydrateBridgeBootstrapState(
@@ -465,7 +486,7 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun renderEmptyState(message: String) {
-        resetAppServerWebSocketClient()
+        appServerCoordinator.reset()
         activeProfile = null
         activeLoadTarget = null
         syncSavedConnectionsState()
@@ -505,21 +526,7 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun activateProfile(profile: BridgeProfile) {
-        profileStore.setActive(profile.id)
-        if (profile.tailnetEnrollmentPayload.isNullOrBlank()) {
-            EnrollmentStore(applicationContext).clear()
-            startService(CodexTailnetService.stopIntent(this))
-        }
-        openBridge(profile)
-    }
-
-    private fun savedConnectionsSummary(): String {
-        val count = profileStore.list().size
-        return if (count == 0) {
-            getString(R.string.native_host_saved_none)
-        } else {
-            getString(R.string.native_host_saved_count, count)
-        }
+        connectionCoordinator.activateProfile(profile)
     }
 
     private fun compactLabel(value: String, maxLength: Int = 28): String {
@@ -529,92 +536,6 @@ class NativeHostActivity : AppCompatActivity() {
         } else {
             trimmed.take(maxLength - 1).trimEnd() + "…"
         }
-    }
-
-    private fun profileAvatar(profile: BridgeProfile): String {
-        val tokens =
-            displayProfileLabel(profile)
-                .split('-', '_', '.', ' ')
-                .map(String::trim)
-                .filter(String::isNotEmpty)
-        val preferredToken = tokens.lastOrNull() ?: displayProfileLabel(profile)
-        return preferredToken.firstOrNull()?.uppercaseChar()?.toString() ?: "C"
-    }
-
-    private fun displayProfileLabel(profile: BridgeProfile): String {
-        val normalizedEndpoint = BridgeApi.normalizeEndpoint(profile.serverEndpoint)
-        val rawName = profile.name.trim()
-        if (rawName.isNotEmpty() && rawName != normalizedEndpoint && !rawName.startsWith("http")) {
-            val candidate =
-                if ('.' in rawName && ' ' !in rawName) {
-                    rawName.substringBefore('.')
-                } else {
-                    rawName
-                }
-            return compactLabel(candidate)
-        }
-        val host = runCatching { Uri.parse(normalizedEndpoint).host.orEmpty() }.getOrDefault("").trim()
-        val candidate =
-            host.substringBefore('.').ifBlank {
-                normalizedEndpoint
-                    .removePrefix("https://")
-                    .removePrefix("http://")
-                    .removePrefix("ws://")
-                    .removePrefix("wss://")
-            }
-        return compactLabel(candidate)
-    }
-
-    private fun displayProfileDetail(profile: BridgeProfile): String {
-        val normalizedEndpoint = BridgeApi.normalizeEndpoint(profile.serverEndpoint)
-        val uri = runCatching { Uri.parse(normalizedEndpoint) }.getOrNull()
-        val host = uri?.host.orEmpty().trim()
-        val portSuffix = if ((uri?.port ?: -1) > 0) ":${uri?.port}" else ""
-        if (host.isNotEmpty()) {
-            val remainder = host.substringAfter('.', "")
-            val candidate = if (remainder.isNotBlank()) remainder else host
-            return compactLabel(candidate + portSuffix, maxLength = 28)
-        }
-        return compactLabel(
-            normalizedEndpoint
-                .removePrefix("https://")
-                .removePrefix("http://")
-                .removePrefix("ws://")
-                .removePrefix("wss://"),
-            maxLength = 28,
-        )
-    }
-
-    private fun describeProfileStatus(profile: BridgeProfile, isCurrent: Boolean): String {
-        val lastUsedAt = profile.lastUsedAtMillis
-        if (lastUsedAt != null) {
-            val relativeTime =
-                DateUtils.getRelativeTimeSpanString(
-                    lastUsedAt,
-                    System.currentTimeMillis(),
-                    DateUtils.MINUTE_IN_MILLIS,
-                    DateUtils.FORMAT_ABBREV_RELATIVE,
-                ).toString()
-            return getString(R.string.native_host_sheet_connection_last_used, relativeTime)
-        }
-        return getString(
-            if (isCurrent) {
-                R.string.native_host_sheet_connection_ready_now
-            } else {
-                R.string.native_host_sheet_connection_saved_status
-            },
-        )
-    }
-
-    private fun describeConnectingStatus(profile: BridgeProfile): String {
-        return currentStatusMessage.ifBlank {
-            when (currentConnectionStage) {
-                ConnectionStage.PAYLOAD_RECEIVED -> getString(R.string.native_host_status_payload_received)
-                ConnectionStage.STARTING_TAILNET -> getString(R.string.native_host_status_preparing_connection)
-                ConnectionStage.PAIRING_DEVICE -> getString(R.string.native_host_status_pairing_device)
-                ConnectionStage.OPENING_WORKSPACE, null -> getString(R.string.native_host_status_opening_workspace)
-            }
-        }.ifBlank { displayProfileDetail(profile) }
     }
 
     private fun resolveThemeVariant(): String {
@@ -722,12 +643,12 @@ class NativeHostActivity : AppCompatActivity() {
         profile: BridgeProfile,
         stateLabelResId: Int,
         tone: ChipTone,
-        detail: String = currentStatusMessage.ifBlank { displayProfileDetail(profile) },
+        detail: String = currentStatusMessage.ifBlank { connectionSheetController.displayProfileDetail(profile) },
         showAction: Boolean = true,
     ) {
         sessionBarView.visibility = View.VISIBLE
-        sessionNameView.text = displayProfileLabel(profile)
-        sessionDetailView.text = detail.ifBlank { displayProfileDetail(profile) }
+        sessionNameView.text = connectionSheetController.displayProfileLabel(profile)
+        sessionDetailView.text = detail.ifBlank { connectionSheetController.displayProfileDetail(profile) }
         sessionStateChipView.text = getString(stateLabelResId)
         applyChipTone(sessionStateChipView, tone)
         sessionActionButton.visibility = if (showAction) View.VISIBLE else View.GONE
@@ -781,7 +702,7 @@ class NativeHostActivity : AppCompatActivity() {
 
         recentSessionsSectionView.visibility = View.VISIBLE
         workspaceMessageGroupView.visibility = View.GONE
-        renderConnectionCards(
+        connectionSheetController.renderConnectionCards(
             container = recentSessionsListView,
             profiles = profiles.take(HOME_SESSION_LIMIT),
             activeProfileId = activeProfileId,
@@ -792,7 +713,7 @@ class NativeHostActivity : AppCompatActivity() {
 
     private fun showDisconnectedSupportingViews() {
         stateIconView.visibility = View.VISIBLE
-        updateRuntimeCard(R.string.native_host_runtime_label_saved, savedConnectionsSummary())
+        updateRuntimeCard(R.string.native_host_runtime_label_saved, connectionSheetController.savedConnectionsSummary())
         hintCardView.visibility = View.VISIBLE
     }
 
@@ -838,7 +759,7 @@ class NativeHostActivity : AppCompatActivity() {
     private fun updateConnectionProgress(
         profileName: String,
         endpoint: String,
-        stage: ConnectionStage,
+        stage: NativeHostConnectionStage,
         requiresPairing: Boolean,
     ) {
         currentConnectionStage = stage
@@ -854,17 +775,17 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun buildConnectionProgressSummary(
-        stage: ConnectionStage,
+        stage: NativeHostConnectionStage,
         requiresPairing: Boolean,
     ): String {
         val steps =
             buildList {
-                add(ConnectionStage.PAYLOAD_RECEIVED to getString(R.string.native_host_progress_step_payload))
-                add(ConnectionStage.STARTING_TAILNET to getString(R.string.native_host_progress_step_tailnet))
+                add(NativeHostConnectionStage.PAYLOAD_RECEIVED to getString(R.string.native_host_progress_step_payload))
+                add(NativeHostConnectionStage.STARTING_TAILNET to getString(R.string.native_host_progress_step_tailnet))
                 if (requiresPairing) {
-                    add(ConnectionStage.PAIRING_DEVICE to getString(R.string.native_host_progress_step_pairing))
+                    add(NativeHostConnectionStage.PAIRING_DEVICE to getString(R.string.native_host_progress_step_pairing))
                 }
-                add(ConnectionStage.OPENING_WORKSPACE to getString(R.string.native_host_progress_step_workspace))
+                add(NativeHostConnectionStage.OPENING_WORKSPACE to getString(R.string.native_host_progress_step_workspace))
             }
         val activeIndex = steps.indexOfFirst { it.first == stage }.coerceAtLeast(0)
         val timeline =
@@ -964,6 +885,7 @@ class NativeHostActivity : AppCompatActivity() {
         secondaryActionButton.visibility = View.GONE
         webView.visibility = View.VISIBLE
         connectionButton.visibility = View.GONE
+        toolbar.title = connectionSheetController.displayProfileLabel(profile)
     }
 
     private fun renderWorkspaceErrorChrome(profile: BridgeProfile, message: String) {
@@ -974,7 +896,7 @@ class NativeHostActivity : AppCompatActivity() {
         activeLoadTarget = null
         toolbar.visibility = View.VISIBLE
         settingsButton.visibility = View.VISIBLE
-        toolbar.title = displayProfileLabel(profile)
+        toolbar.title = connectionSheetController.displayProfileLabel(profile)
         toolbar.subtitle = null
         hideSessionBar()
         heroCardView.visibility = View.VISIBLE
@@ -1099,62 +1021,33 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun updateWorkspaceRoots(nextRoots: List<String>, preferredRoot: String? = null) {
-        val normalizedRoots = uniqueTrimmedStrings(nextRoots.mapNotNull { normalizeWorkspaceRootCandidate(it) })
-        val preferred = normalizeWorkspaceRootCandidate(preferredRoot)
-        val nextActiveRoots =
-            when {
-                preferred != null && normalizedRoots.contains(preferred) -> mutableListOf(preferred)
-                hostState.activeWorkspaceRoots.firstOrNull() in normalizedRoots -> mutableListOf(hostState.activeWorkspaceRoots.first())
-                normalizedRoots.isNotEmpty() -> mutableListOf(normalizedRoots.first())
-                else -> mutableListOf()
-            }
-
-        if (hostState.workspaceRootOptions == normalizedRoots && hostState.activeWorkspaceRoots == nextActiveRoots) {
-            return
-        }
-
-        hostState.workspaceRootOptions.clear()
-        hostState.workspaceRootOptions.addAll(normalizedRoots)
-        hostState.activeWorkspaceRoots.clear()
-        hostState.activeWorkspaceRoots.addAll(nextActiveRoots)
-        sendHostMessage(JSONObject().put("type", "workspace-root-options-updated"))
-        sendHostMessage(JSONObject().put("type", "active-workspace-roots-updated"))
+        emitWorkspaceSelectionChange(
+            sessionState.updateWorkspaceRoots(nextRoots, preferredRoot),
+        )
     }
 
     private fun mergeWorkspaceRoots(nextRoots: List<String>, preferredRoot: String? = null) {
-        updateWorkspaceRoots(hostState.workspaceRootOptions + nextRoots, preferredRoot)
+        emitWorkspaceSelectionChange(
+            sessionState.mergeWorkspaceRoots(nextRoots, preferredRoot),
+        )
     }
 
     private fun setActiveWorkspaceRoot(root: String) {
-        val normalizedRoot = normalizeWorkspaceRootCandidate(root) ?: return
-        val nextOptions =
-            if (hostState.workspaceRootOptions.contains(normalizedRoot)) {
-                hostState.workspaceRootOptions.toMutableList()
-            } else {
-                mutableListOf(normalizedRoot).apply { addAll(hostState.workspaceRootOptions) }
-            }
-        val nextActiveRoots = mutableListOf(normalizedRoot)
-        val optionsChanged = hostState.workspaceRootOptions != nextOptions
-        val activeChanged = hostState.activeWorkspaceRoots != nextActiveRoots
-        if (!optionsChanged && !activeChanged) {
-            return
-        }
-
-        hostState.workspaceRootOptions.clear()
-        hostState.workspaceRootOptions.addAll(nextOptions)
-        hostState.activeWorkspaceRoots.clear()
-        hostState.activeWorkspaceRoots.addAll(nextActiveRoots)
-        if (optionsChanged) {
-            sendHostMessage(JSONObject().put("type", "workspace-root-options-updated"))
-        }
-        if (activeChanged) {
-            sendHostMessage(JSONObject().put("type", "active-workspace-roots-updated"))
-        }
+        emitWorkspaceSelectionChange(
+            sessionState.setActiveWorkspaceRoot(root),
+        )
     }
 
-    private fun normalizeWorkspaceRootCandidate(value: String?): String? {
-        val normalized = value?.trim()?.replace('\\', '/')?.replace(Regex("/+"), "/").orEmpty()
-        return normalized.ifBlank { null }
+    private fun emitWorkspaceSelectionChange(change: WorkspaceSelectionChange?) {
+        if (change == null) {
+            return
+        }
+        if (change.optionsChanged) {
+            sendHostMessage(JSONObject().put("type", "workspace-root-options-updated"))
+        }
+        if (change.activeChanged) {
+            sendHostMessage(JSONObject().put("type", "active-workspace-roots-updated"))
+        }
     }
 
     private fun hydrateBridgeBootstrapState(
@@ -1214,57 +1107,25 @@ class NativeHostActivity : AppCompatActivity() {
             globalState[key] = deepCopyJsonValue(value)
         }
 
-        hostState.workspaceRootLabels.clear()
-        hostState.workspaceRootLabels.putAll(state.workspaceRootLabels)
-        hostState.pinnedThreadIds.clear()
-        hostState.pinnedThreadIds.addAll(state.pinnedThreadIds)
+        sessionState.replaceWorkspaceRootLabels(state.workspaceRootLabels)
+        sessionState.replacePinnedThreadIds(state.pinnedThreadIds)
         updateWorkspaceRoots(
             nextRoots = state.workspaceRootOptions,
             preferredRoot = state.activeWorkspaceRoots.firstOrNull(),
         )
     }
 
-    private fun jsonArrayStrings(values: JSONArray?): List<String> {
-        if (values == null) {
-            return emptyList()
-        }
-        val result = mutableListOf<String>()
-        for (index in 0 until values.length()) {
-            val value = values.optString(index).trim()
-            if (value.isNotEmpty()) {
-                result.add(value)
-            }
-        }
-        return result
-    }
-
-    private fun jsonObjectStringMap(value: JSONObject?): Map<String, String> {
-        if (value == null) {
-            return emptyMap()
-        }
-        val result = linkedMapOf<String, String>()
-        val keys = value.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            val text = value.optString(key).trim()
-            if (text.isNotEmpty()) {
-                result[key] = text
-            }
-        }
-        return result
-    }
-
     private fun mergeWorkspaceRootsFromResult(result: JSONObject) {
         val candidates = mutableListOf<String>()
 
         fun collectThreadRoots(value: JSONObject?) {
-            val cwd = normalizeWorkspaceRootCandidate(value?.optString("cwd"))
+            val cwd = NativeHostSessionState.normalizeWorkspaceRootCandidate(value?.optString("cwd"))
             if (!cwd.isNullOrBlank()) {
                 candidates.add(cwd)
             }
         }
 
-        normalizeWorkspaceRootCandidate(result.optString("cwd"))?.let(candidates::add)
+        NativeHostSessionState.normalizeWorkspaceRootCandidate(result.optString("cwd"))?.let(candidates::add)
         collectThreadRoots(result.optJSONObject("thread"))
 
         val data = result.optJSONArray("data")
@@ -1278,50 +1139,6 @@ class NativeHostActivity : AppCompatActivity() {
             mergeWorkspaceRoots(candidates, candidates.firstOrNull())
         }
     }
-
-    private fun uniqueTrimmedStrings(values: List<String>): MutableList<String> {
-        val result = mutableListOf<String>()
-        val seen = linkedSetOf<String>()
-        values.forEach { value ->
-            val normalized = value.trim()
-            if (normalized.isNotEmpty() && seen.add(normalized)) {
-                result.add(normalized)
-            }
-        }
-        return result
-    }
-
-    private fun deepCopyJsonObject(value: JSONObject): JSONObject = JSONObject(value.toString())
-
-    private fun deepCopyJsonValue(value: Any?): Any? =
-        when (value) {
-            null, JSONObject.NULL -> JSONObject.NULL
-            is JSONObject -> JSONObject(value.toString())
-            is JSONArray -> JSONArray(value.toString())
-            is Map<*, *> -> {
-                val objectValue = JSONObject()
-                value.forEach { (key, entryValue) ->
-                    if (key is String) {
-                        objectValue.put(key, deepCopyJsonValue(entryValue))
-                    }
-                }
-                objectValue
-            }
-            is Iterable<*> -> {
-                val arrayValue = JSONArray()
-                value.forEach { entryValue ->
-                    arrayValue.put(deepCopyJsonValue(entryValue))
-                }
-                arrayValue
-            }
-            else -> value
-        }
-
-    private fun toJsonCompatible(value: Any?): Any =
-        when (val copied = deepCopyJsonValue(value)) {
-            null -> JSONObject.NULL
-            else -> copied
-        }
 
     private fun deriveLocaleInfo(): JSONObject {
         val locale = Locale.getDefault().toLanguageTag().ifBlank { "en-US" }
@@ -1366,25 +1183,21 @@ class NativeHostActivity : AppCompatActivity() {
                     JSONObject().put("success", true)
                 }
             }
-            "list-pinned-threads" -> JSONObject().put("threadIds", JSONArray(hostState.pinnedThreadIds))
+            "list-pinned-threads" -> JSONObject().put("threadIds", JSONArray(sessionState.pinnedThreadIds))
             "set-thread-pinned" -> {
                 val threadId = params?.optString("threadId")?.trim().orEmpty()
                 if (threadId.isEmpty()) {
                     JSONObject()
                         .put("success", false)
-                        .put("threadIds", JSONArray(hostState.pinnedThreadIds))
+                        .put("threadIds", JSONArray(sessionState.pinnedThreadIds))
                 } else {
-                    val pinned = params?.optBoolean("pinned", false) == true
-                    if (pinned) {
-                        val nextThreadIds = uniqueTrimmedStrings(hostState.pinnedThreadIds + threadId)
-                        hostState.pinnedThreadIds.clear()
-                        hostState.pinnedThreadIds.addAll(nextThreadIds)
-                    } else {
-                        hostState.pinnedThreadIds.removeAll { it == threadId }
-                    }
+                    sessionState.setThreadPinned(
+                        threadId = threadId,
+                        pinned = params?.optBoolean("pinned", false) == true,
+                    )
                     JSONObject()
                         .put("success", true)
-                        .put("threadIds", JSONArray(hostState.pinnedThreadIds))
+                        .put("threadIds", JSONArray(sessionState.pinnedThreadIds))
                 }
             }
             "set-pinned-threads-order" -> {
@@ -1401,13 +1214,12 @@ class NativeHostActivity : AppCompatActivity() {
                             },
                         )
                     } else {
-                        hostState.pinnedThreadIds.toMutableList()
+                        sessionState.pinnedThreadIds.toMutableList()
                     }
-                hostState.pinnedThreadIds.clear()
-                hostState.pinnedThreadIds.addAll(nextThreadIds)
+                sessionState.replacePinnedThreadIds(nextThreadIds)
                 JSONObject()
                     .put("success", true)
-                    .put("threadIds", JSONArray(hostState.pinnedThreadIds))
+                    .put("threadIds", JSONArray(sessionState.pinnedThreadIds))
             }
             "experimentalFeature/list" -> JSONObject()
                 .put("data", JSONArray())
@@ -1418,17 +1230,17 @@ class NativeHostActivity : AppCompatActivity() {
                 .put("isWindows", false)
                 .put("isLinux", false)
             "locale-info" -> deriveLocaleInfo()
-            "active-workspace-roots" -> JSONObject().put("roots", JSONArray(hostState.activeWorkspaceRoots))
+            "active-workspace-roots" -> JSONObject().put("roots", JSONArray(sessionState.activeWorkspaceRoots))
             "workspace-root-options" -> JSONObject()
-                .put("roots", JSONArray(hostState.workspaceRootOptions))
-                .put("activeRoots", JSONArray(hostState.activeWorkspaceRoots))
-                .put("labels", JSONObject(hostState.workspaceRootLabels.toMap()))
+                .put("roots", JSONArray(sessionState.workspaceRootOptions))
+                .put("activeRoots", JSONArray(sessionState.activeWorkspaceRoots))
+                .put("labels", JSONObject(sessionState.workspaceRootLabels.toMap()))
             "paths-exist" -> {
                 val existingPaths = JSONArray()
                 val paths = params?.optJSONArray("paths")
                 if (paths != null) {
                     for (index in 0 until paths.length()) {
-                        val path = normalizeWorkspaceRootCandidate(paths.optString(index))
+                        val path = NativeHostSessionState.normalizeWorkspaceRootCandidate(paths.optString(index))
                         if (!path.isNullOrBlank()) {
                             existingPaths.put(path)
                         }
@@ -1440,313 +1252,17 @@ class NativeHostActivity : AppCompatActivity() {
         }
     }
 
-    private fun resetAppServerWebSocketClient() {
-        appServerWebSocketClient?.close()
-        appServerWebSocketClient = null
-    }
-
-    private fun webSocketUrlForBaseUrl(baseUrl: String): String {
-        val normalized = BridgeApi.normalizeEndpoint(baseUrl)
-        return when {
-            normalized.startsWith("https://") -> "wss://${normalized.removePrefix("https://")}"
-            normalized.startsWith("http://") -> "ws://${normalized.removePrefix("http://")}"
-            else -> normalized
-        }
-    }
-
-    private fun appServerAuthHeaders(loadTarget: BridgeLoadTarget, authToken: String?): Map<String, String> {
-        if (loadTarget.usesLocalProxy || authToken.isNullOrBlank()) {
-            return emptyMap()
-        }
-        return mapOf("Authorization" to "Bearer $authToken")
-    }
-
-    private fun getAppServerWebSocketClient(
-        loadTarget: BridgeLoadTarget,
-        authToken: String?,
-    ): AppServerWebSocketClient {
-        val webSocketUrl = webSocketUrlForBaseUrl(loadTarget.baseUrl)
-        val headers = appServerAuthHeaders(loadTarget, authToken)
-        val existing = appServerWebSocketClient
-        if (existing != null && existing.matches(webSocketUrl, headers)) {
-            return existing
-        }
-
-        existing?.close()
-        return AppServerWebSocketClient(
-            webSocketUrl = webSocketUrl,
-            headers = headers,
-            onNotification = { method, params ->
-                handleAppServerNotification(
-                    method = method,
-                    params = params,
-                    loadTarget = loadTarget,
-                    authToken = authToken,
-                )
-            },
-            onLog = { message, error ->
-                android.util.Log.w("CodexMobile", message, error)
-            },
-        ).also {
-            appServerWebSocketClient = it
-        }
-    }
-
-    private fun performAppServerMcpRequest(
-        loadTarget: BridgeLoadTarget,
-        authToken: String?,
-        method: String,
-        params: JSONObject,
-    ): JSONObject {
-        return getAppServerWebSocketClient(loadTarget, authToken).request(method, params)
-    }
-
     private fun integrateDirectRpcResult(method: String, result: JSONObject) {
         when (method) {
-            "account/read" -> hostState.account = deepCopyJsonObject(result)
-            "account/rateLimits/read" -> hostState.rateLimit = deepCopyJsonObject(result)
             "thread/list", "thread/read", "thread/start", "thread/resume" -> mergeWorkspaceRootsFromResult(result)
             "workspace-root-options" -> {
-                val labels = jsonObjectStringMap(result.optJSONObject("labels"))
-                hostState.workspaceRootLabels.clear()
-                hostState.workspaceRootLabels.putAll(labels)
+                sessionState.replaceWorkspaceRootLabels(jsonObjectStringMap(result.optJSONObject("labels")))
                 updateWorkspaceRoots(
                     nextRoots = jsonArrayStrings(result.optJSONArray("roots")),
                     preferredRoot = jsonArrayStrings(result.optJSONArray("activeRoots")).firstOrNull(),
                 )
             }
         }
-    }
-
-    private fun handleAppServerNotification(
-        method: String,
-        params: JSONObject,
-        loadTarget: BridgeLoadTarget,
-        authToken: String?,
-    ) {
-        when (method) {
-            "thread/status/changed" -> {
-                val threadId = params.optString("threadId").trim()
-                val status = params.optJSONObject("status")
-                if (
-                    threadId.isNotEmpty() &&
-                    status != null &&
-                    isThreadStatusTerminal(status) &&
-                    hasPendingTurnCompletion(threadId)
-                ) {
-                    reconcileCompletedThreadState(threadId, loadTarget, authToken)
-                }
-            }
-            "turn/started" -> {
-                val threadId = params.optString("threadId").trim()
-                val turnId = params.optJSONObject("turn")?.optString("id")?.trim().orEmpty()
-                rememberPendingTurnCompletion(
-                    threadId = threadId.ifEmpty { null },
-                    turnId = turnId.ifEmpty { null },
-                )
-            }
-            "turn/completed" -> {
-                val threadId = params.optString("threadId").trim()
-                val turnId = params.optJSONObject("turn")?.optString("id")?.trim().orEmpty()
-                clearPendingTurnCompletion(
-                    threadId = threadId.ifEmpty { null },
-                    turnId = turnId.ifEmpty { null },
-                )
-            }
-            "account/updated", "account/changed" -> {
-                hostState.account = deepCopyJsonObject(params.optJSONObject("account") ?: JSONObject())
-            }
-            "account/rateLimits/updated", "rate-limit/updated", "rate-limit/changed",
-            "rateLimit/updated", "rateLimit/changed" -> {
-                hostState.rateLimit = deepCopyJsonObject(params.optJSONObject("rateLimit") ?: JSONObject())
-            }
-        }
-
-        emitMcpNotification(method, deepCopyJsonObject(params))
-    }
-
-    private fun rememberPendingTurnCompletion(threadId: String?, turnId: String?) {
-        if (threadId.isNullOrBlank() || turnId.isNullOrBlank()) {
-            return
-        }
-        pendingTurnCompletions[threadId] = turnId
-    }
-
-    private fun clearPendingTurnCompletion(threadId: String?, turnId: String? = null) {
-        if (threadId.isNullOrBlank()) {
-            return
-        }
-        val pendingTurnId = pendingTurnCompletions[threadId] ?: return
-        if (!turnId.isNullOrBlank() && pendingTurnId != turnId) {
-            return
-        }
-        pendingTurnCompletions.remove(threadId)
-    }
-
-    private fun hasPendingTurnCompletion(threadId: String?, turnId: String? = null): Boolean {
-        if (threadId.isNullOrBlank()) {
-            return false
-        }
-        val pendingTurnId = pendingTurnCompletions[threadId] ?: return false
-        if (!turnId.isNullOrBlank() && pendingTurnId != turnId) {
-            return false
-        }
-        return true
-    }
-
-    private fun isThreadStatusTerminal(status: JSONObject?): Boolean {
-        val type = status?.optString("type")?.trim().orEmpty()
-        return type == "idle" || type == "systemError"
-    }
-
-    private fun scheduleTurnCompletionFallback(
-        threadId: String,
-        turnId: String?,
-        loadTarget: BridgeLoadTarget,
-        authToken: String?,
-        delayMs: Long = 1500L,
-    ) {
-        thread(name = "codex-turn-fallback-$threadId") {
-            try {
-                Thread.sleep(delayMs)
-                if (!hasPendingTurnCompletion(threadId, turnId)) {
-                    return@thread
-                }
-                reconcileCompletedThreadState(threadId, loadTarget, authToken)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-        }
-    }
-
-    private fun emitMcpNotification(method: String, params: JSONObject) {
-        sendHostMessage(
-            JSONObject()
-                .put("type", "mcp-notification")
-                .put("hostId", LOCAL_HOST_ID)
-                .put("method", method)
-                .put("params", params)
-                .put(
-                    "notification",
-                    JSONObject()
-                        .put("method", method)
-                        .put("params", params),
-                ),
-        )
-    }
-
-    private fun emitSyntheticTurnCompletion(threadId: String, turn: JSONObject) {
-        val turnId = turn.optString("id").trim()
-        if (turnId.isEmpty()) {
-            return
-        }
-        if (emittedTurnCompletions[threadId] == turnId) {
-            return
-        }
-
-        emitMcpNotification(
-            "turn/started",
-            JSONObject()
-                .put("threadId", threadId)
-                .put("turn", deepCopyJsonObject(turn)),
-        )
-
-        val items = turn.optJSONArray("items")
-        if (items != null) {
-            for (index in 0 until items.length()) {
-                val item = items.optJSONObject(index) ?: continue
-                if (item.optString("type") == "userMessage") {
-                    continue
-                }
-                val itemPayload =
-                    JSONObject()
-                        .put("threadId", threadId)
-                        .put("turnId", turnId)
-                        .put("item", deepCopyJsonObject(item))
-                emitMcpNotification("item/started", itemPayload)
-                emitMcpNotification("item/completed", itemPayload)
-            }
-        }
-
-        emitMcpNotification(
-            "turn/completed",
-            JSONObject()
-                .put("threadId", threadId)
-                .put("turn", deepCopyJsonObject(turn)),
-        )
-        emittedTurnCompletions[threadId] = turnId
-        clearPendingTurnCompletion(threadId, turnId)
-    }
-
-    private fun reconcileCompletedThreadState(threadId: String, loadTarget: BridgeLoadTarget, authToken: String?) {
-        if (!activeTurnReconciliations.add(threadId)) {
-            return
-        }
-        thread(name = "codex-turn-reconcile-$threadId") {
-            try {
-                repeat(90) { attempt ->
-                    val result =
-                        BridgeApi.performDirectRpcByBaseUrl(
-                            baseUrl = loadTarget.baseUrl,
-                            method = "thread/read",
-                            params = JSONObject().put("threadId", threadId).put("includeTurns", true),
-                            authToken = authToken,
-                        )
-                    integrateDirectRpcResult("thread/read", result)
-                    val threadObject = result.optJSONObject("thread")
-                    val statusObject = threadObject?.optJSONObject("status")
-                    if (threadObject != null && statusObject != null && isThreadStatusTerminal(statusObject)) {
-                        val turns = threadObject.optJSONArray("turns")
-                        val latestTurn = turns?.optJSONObject(turns.length() - 1)
-                        val latestTurnId = latestTurn?.optString("id")?.trim().orEmpty()
-                        val latestTurnStatus = latestTurn?.optString("status")?.trim().orEmpty()
-                        if (
-                            latestTurn != null &&
-                            latestTurnId.isNotEmpty() &&
-                            latestTurnStatus.isNotEmpty() &&
-                            latestTurnStatus != "inProgress"
-                        ) {
-                            emitSyntheticTurnCompletion(threadId, latestTurn)
-                        }
-                        emitMcpNotification(
-                            "thread/status/changed",
-                            JSONObject()
-                                .put("threadId", threadId)
-                                .put("status", deepCopyJsonObject(statusObject)),
-                        )
-                        return@thread
-                    }
-                    if (attempt < 89) {
-                        Thread.sleep(if (attempt < 5) 350L else 800L)
-                    }
-                }
-            } catch (error: Exception) {
-                android.util.Log.w("CodexMobile", "failed to reconcile thread completion for $threadId", error)
-            } finally {
-                activeTurnReconciliations.remove(threadId)
-            }
-        }
-    }
-
-    private fun reconcileThreadSnapshotIfNeeded(
-        method: String,
-        result: JSONObject,
-        loadTarget: BridgeLoadTarget,
-        authToken: String?,
-    ) {
-        if (method != "thread/read" && method != "thread/resume" && method != "thread/start") {
-            return
-        }
-        val threadObject = result.optJSONObject("thread") ?: return
-        val threadId = threadObject.optString("id").trim()
-        if (threadId.isEmpty()) {
-            return
-        }
-        val statusObject = threadObject.optJSONObject("status")
-        if (!isThreadStatusTerminal(statusObject) && method != "thread/start") {
-            return
-        }
-        reconcileCompletedThreadState(threadId, loadTarget, authToken)
     }
 
     private fun injectHostMessages(messages: JSONArray) {
@@ -1808,419 +1324,6 @@ class NativeHostActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleEnvelope(rawMessage: String) {
-        try {
-            val envelope = JSONObject(rawMessage)
-            if (!envelope.optBoolean("__codexMobile", false)) {
-                return
-            }
-            when (envelope.optString("kind")) {
-                "preload-ready" -> {
-                    android.util.Log.d("CodexMobile", "preload ready ${envelope.opt("payload")}")
-                    activeProfile?.let { profile ->
-                        setStatus("Connected to ${profile.serverEndpoint}")
-                    }
-                }
-                "console" -> android.util.Log.d("CodexMobile", "renderer ${envelope.opt("payload")}")
-                "bridge-send-message" -> {
-                    val payload = envelope.optJSONObject("payload") ?: return
-                    android.util.Log.d(
-                        "CodexMobile",
-                        "bridge-send-message ${payload.optString("type")} ${payload.optJSONObject("request")?.optString("method")}",
-                    )
-                    handleRendererMessage(payload)
-                }
-                "bridge-send-worker-message" -> {
-                    val payload = envelope.optJSONObject("payload") ?: return
-                    android.util.Log.d("CodexMobile", "bridge-send-worker-message ${payload.optString("workerId")}")
-                    handleWorkerBridgeMessage(payload)
-                }
-                "bridge-show-context-menu", "bridge-show-application-menu" -> {
-                    val payload = envelope.optJSONObject("payload") ?: return
-                    val requestId = payload.optString("requestId").trim()
-                    if (requestId.isNotEmpty()) {
-                        sendBridgeResponse(requestId, null)
-                    }
-                }
-            }
-        } catch (error: Exception) {
-            android.util.Log.w("CodexMobile", "failed to parse webview envelope", error)
-        }
-    }
-
-    private fun handleRendererReady() {
-        android.util.Log.d("CodexMobile", "renderer ready")
-        sendPersistedAtomSync()
-        sendHostMessage(JSONObject().put("type", "custom-prompts-updated").put("prompts", JSONArray()))
-        sendHostMessage(JSONObject().put("type", "app-update-ready-changed").put("isUpdateReady", false))
-        sendHostMessage(JSONObject().put("type", "electron-window-focus-changed").put("isFocused", true))
-        sendHostMessage(JSONObject().put("type", "workspace-root-options-updated"))
-        sendHostMessage(JSONObject().put("type", "active-workspace-roots-updated"))
-        sharedObjects.forEach { (key, value) ->
-            broadcastSharedObjectUpdate(key, value)
-        }
-    }
-
-    private fun handleRendererMessage(message: JSONObject) {
-        android.util.Log.d("CodexMobile", "renderer message ${message.optString("type")}")
-        when (message.optString("type")) {
-            "ready" -> handleRendererReady()
-            "persisted-atom-sync-request" -> sendPersistedAtomSync()
-            "persisted-atom-update" -> {
-                val key = message.optString("key").trim()
-                if (key.isEmpty()) {
-                    return
-                }
-                val deleted = message.optBoolean("deleted", false)
-                if (deleted) {
-                    persistedAtomState.remove(key)
-                } else {
-                    persistedAtomState.put(key, toJsonCompatible(message.opt("value")))
-                }
-                sendHostMessage(
-                    JSONObject()
-                        .put("type", "persisted-atom-updated")
-                        .put("key", key)
-                        .put("value", if (deleted) JSONObject.NULL else toJsonCompatible(message.opt("value")))
-                        .put("deleted", deleted),
-                )
-            }
-            "persisted-atom-reset" -> {
-                persistedAtomState = deepCopyJsonObject(DEFAULT_PERSISTED_ATOM_STATE)
-                sendPersistedAtomSync()
-            }
-            "shared-object-subscribe" -> {
-                val key = message.optString("key").trim()
-                if (key.isEmpty()) {
-                    return
-                }
-                sharedObjectSubscribers[key] = (sharedObjectSubscribers[key] ?: 0) + 1
-                broadcastSharedObjectUpdate(key, sharedObjects[key])
-            }
-            "shared-object-unsubscribe" -> {
-                val key = message.optString("key").trim()
-                if (key.isEmpty()) {
-                    return
-                }
-                val count = sharedObjectSubscribers[key] ?: 0
-                if (count <= 1) {
-                    sharedObjectSubscribers.remove(key)
-                } else {
-                    sharedObjectSubscribers[key] = count - 1
-                }
-            }
-            "shared-object-set" -> {
-                val key = message.optString("key").trim()
-                if (key.isEmpty()) {
-                    return
-                }
-                sharedObjects[key] = message.opt("value")
-                broadcastSharedObjectUpdate(key, sharedObjects[key])
-            }
-            "electron-window-focus-request" -> sendHostMessage(
-                JSONObject().put("type", "electron-window-focus-changed").put("isFocused", true),
-            )
-            "open-in-browser" -> {
-                val url = message.optString("url").trim()
-                if (url.isNotEmpty()) {
-                    runCatching {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    }
-                }
-            }
-            "terminal-create", "terminal-attach" -> {
-                val sessionId = message.optString("sessionId").trim()
-                if (sessionId.isNotEmpty()) {
-                    sendHostMessage(
-                        JSONObject()
-                            .put("type", "terminal-attached")
-                            .put("sessionId", sessionId)
-                            .put("cwd", message.optString("cwd"))
-                            .put("shell", "zsh"),
-                    )
-                    sendHostMessage(
-                        JSONObject()
-                            .put("type", "terminal-init-log")
-                            .put("sessionId", sessionId)
-                            .put("log", ""),
-                    )
-                }
-            }
-            "terminal-close" -> {
-                val sessionId = message.optString("sessionId").trim()
-                if (sessionId.isNotEmpty()) {
-                    sendHostMessage(
-                        JSONObject()
-                            .put("type", "terminal-exit")
-                            .put("sessionId", sessionId)
-                            .put("code", 0)
-                            .put("signal", JSONObject.NULL),
-                    )
-                }
-            }
-            "workspace-root-option-picked" -> {
-                val root = message.optString("root").trim()
-                if (root.isNotEmpty()) {
-                    setActiveWorkspaceRoot(root)
-                }
-            }
-            "electron-update-workspace-root-options" -> {
-                val roots = mutableListOf<String>()
-                val values = message.optJSONArray("roots")
-                if (values != null) {
-                    for (index in 0 until values.length()) {
-                        roots.add(values.optString(index))
-                    }
-                }
-                updateWorkspaceRoots(roots)
-            }
-            "electron-rename-workspace-root-option" -> {
-                val root = normalizeWorkspaceRootCandidate(message.optString("root")) ?: return
-                if (!hostState.workspaceRootOptions.contains(root)) {
-                    return
-                }
-                val label = message.optString("label").trim()
-                if (label.isEmpty()) {
-                    hostState.workspaceRootLabels.remove(root)
-                } else {
-                    hostState.workspaceRootLabels[root] = label
-                }
-                sendHostMessage(JSONObject().put("type", "workspace-root-options-updated"))
-            }
-            "electron-set-active-workspace-root" -> {
-                val root = message.optString("root").trim()
-                if (root.isNotEmpty()) {
-                    setActiveWorkspaceRoot(root)
-                }
-            }
-            "fetch" -> handleFetchMessage(message)
-            "cancel-fetch" -> Unit
-            "fetch-stream" -> {
-                val requestId = message.optString("requestId").trim()
-                if (requestId.isNotEmpty()) {
-                    sendHostMessage(
-                        JSONObject()
-                            .put("type", "fetch-stream-error")
-                            .put("requestId", requestId)
-                            .put("error", "Streaming fetch is not supported in Codex Mobile yet."),
-                    )
-                }
-            }
-            "cancel-fetch-stream", "bridge-unimplemented", "view-focused", "power-save-blocker-set",
-            "electron-set-window-mode", "electron-request-microphone-permission",
-            "electron-set-badge-count", "desktop-notification-hide", "desktop-notification-show",
-            "install-app-update", "open-debug-window", "open-thread-overlay",
-            "thread-stream-state-changed", "set-telemetry-user", "toggle-trace-recording",
-            "hotkey-window-enabled-changed", "electron-desktop-features-changed" -> Unit
-            "log-message" -> {
-                android.util.Log.d("CodexMobile", "renderer log-message ${message.opt("message")}")
-            }
-            "mcp-request" -> handleMcpRequestMessage(message)
-        }
-    }
-
-    private fun handleFetchMessage(message: JSONObject) {
-        val requestId = message.optString("requestId").trim()
-        val rawUrl = message.optString("url").trim()
-        if (requestId.isEmpty() || rawUrl.isEmpty()) {
-            return
-        }
-        val profile = activeProfile ?: return
-        val loadTarget = activeLoadTarget ?: resolveBridgeLoadTarget(profile)
-        thread {
-            try {
-                val method = resolveRequestMethodName(rawUrl)
-                if (method != null) {
-                    val localResult = resolveFetchMethodPayload(method, parseJsonBodyObject(message.optString("body")))
-                    if (localResult !== UNHANDLED_LOCAL_METHOD) {
-                        sendHostMessage(buildFetchSuccessResponse(requestId, localResult, 200, JSONObject()))
-                        return@thread
-                    }
-                    val result = BridgeApi.performDirectRpcByBaseUrl(
-                        baseUrl = loadTarget.baseUrl,
-                        method = method,
-                        params = parseJsonBodyObject(message.optString("body")) ?: JSONObject(),
-                        authToken = if (loadTarget.usesLocalProxy) null else profile.authToken,
-                    )
-                    integrateDirectRpcResult(method, result)
-                    sendHostMessage(buildFetchSuccessResponse(requestId, result, 200, JSONObject()))
-                    return@thread
-                }
-
-                val proxyUrl = resolveServerFetchUrl(rawUrl, loadTarget.baseUrl)
-                if (proxyUrl == null) {
-                    sendHostMessage(
-                        buildFetchErrorResponse(
-                            requestId = requestId,
-                            error = "Unsupported fetch URL: $rawUrl",
-                            status = 501,
-                        ),
-                    )
-                    return@thread
-                }
-
-                val proxiedResponse = proxyHttpFetch(
-                    url = proxyUrl,
-                    method = message.optString("method"),
-                    requestBody = message.optString("body").takeIf { it.isNotBlank() },
-                    requestHeaders = message.optJSONObject("headers"),
-                    authToken = if (loadTarget.usesLocalProxy) null else profile.authToken,
-                )
-                sendHostMessage(
-                    buildFetchSuccessResponse(
-                        requestId = requestId,
-                        body = proxiedResponse.body,
-                        status = proxiedResponse.status,
-                        headers = proxiedResponse.headers,
-                    ),
-                )
-            } catch (error: Exception) {
-                android.util.Log.w("CodexMobile", "fetch handler failed for $rawUrl", error)
-                sendHostMessage(
-                    buildFetchErrorResponse(
-                        requestId = requestId,
-                        error = normalizeErrorMessage(error),
-                        status = 500,
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun resolveRequestMethodName(rawUrl: String): String? {
-        val prefix = "vscode://codex/"
-        if (!rawUrl.startsWith(prefix)) {
-            return null
-        }
-        return rawUrl.removePrefix(prefix).substringBefore('?').trim().ifBlank { null }
-    }
-
-    private fun resolveServerFetchUrl(rawUrl: String, baseUrl: String): String? {
-        val trimmed = rawUrl.trim()
-        if (trimmed.isEmpty()) {
-            return null
-        }
-        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-            return trimmed
-        }
-        return try {
-            URL(URL("${BridgeApi.normalizeEndpoint(baseUrl)}/"), trimmed).toString()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun parseJsonBodyObject(value: String?): JSONObject? {
-        if (value == null || value.isBlank()) {
-            return null
-        }
-        return try {
-            JSONObject(value)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun proxyHttpFetch(
-        url: String,
-        method: String?,
-        requestBody: String?,
-        requestHeaders: JSONObject?,
-        authToken: String?,
-    ): HttpProxyResponse {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.requestMethod = method?.trim()?.uppercase().takeUnless { it.isNullOrBlank() } ?: "GET"
-        requestHeaders?.keys()?.forEach { key ->
-            val value = requestHeaders.opt(key)
-            if (value is String && value.isNotBlank()) {
-                connection.setRequestProperty(key, value)
-            }
-        }
-        if (!authToken.isNullOrBlank() && connection.getRequestProperty("Authorization").isNullOrBlank()) {
-            connection.setRequestProperty("Authorization", "Bearer ${authToken.trim()}")
-        }
-        if (!requestBody.isNullOrBlank()) {
-            connection.doOutput = true
-            if (connection.getRequestProperty("Content-Type").isNullOrBlank()) {
-                connection.setRequestProperty("Content-Type", "application/json")
-            }
-            connection.outputStream.use { stream ->
-                stream.write(requestBody.toByteArray())
-            }
-        }
-
-        val status = connection.responseCode
-        val stream = if (status in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream ?: connection.inputStream
-        }
-        val responseText = BufferedReader(InputStreamReader(stream)).use { reader ->
-            buildString {
-                while (true) {
-                    val line = reader.readLine() ?: break
-                    append(line)
-                }
-            }
-        }
-        val headers = JSONObject()
-        connection.headerFields.forEach { (key, values) ->
-            if (key != null && !values.isNullOrEmpty()) {
-                headers.put(key, values.joinToString(", "))
-            }
-        }
-        val parsedBody = parseJsonValue(responseText)
-        return HttpProxyResponse(
-            body = parsedBody,
-            status = status,
-            headers = headers,
-        )
-    }
-
-    private fun parseJsonValue(value: String): Any? {
-        val trimmed = value.trim()
-        if (trimmed.isEmpty()) {
-            return null
-        }
-        return try {
-            when {
-                trimmed.startsWith("{") -> JSONObject(trimmed)
-                trimmed.startsWith("[") -> JSONArray(trimmed)
-                else -> trimmed
-            }
-        } catch (_: Exception) {
-            trimmed
-        }
-    }
-
-    private fun buildFetchSuccessResponse(
-        requestId: String,
-        body: Any?,
-        status: Int,
-        headers: JSONObject,
-    ): JSONObject {
-        return JSONObject()
-            .put("type", "fetch-response")
-            .put("requestId", requestId)
-            .put("responseType", "success")
-            .put("status", status)
-            .put("headers", headers)
-            .put("bodyJsonString", JSONObject.wrap(body)?.toString() ?: "null")
-    }
-
-    private fun buildFetchErrorResponse(
-        requestId: String,
-        error: String,
-        status: Int,
-    ): JSONObject {
-        return JSONObject()
-            .put("type", "fetch-response")
-            .put("requestId", requestId)
-            .put("responseType", "error")
-            .put("status", status)
-            .put("error", error)
-    }
-
     private fun normalizeErrorMessage(error: Throwable): String {
         val message = error.message?.trim().orEmpty()
         if (message.equals("Invalid or expired pairing code", ignoreCase = true)) {
@@ -2233,182 +1336,6 @@ class NativeHostActivity : AppCompatActivity() {
         }
     }
 
-    private fun handleMcpRequestMessage(message: JSONObject) {
-        val request = message.optJSONObject("request") ?: return
-        val requestId = request.opt("id")?.toString()?.trim().orEmpty()
-        val method = request.optString("method").trim()
-        if (requestId.isEmpty() || method.isEmpty()) {
-            return
-        }
-        android.util.Log.d("CodexMobile", "mcp request $method id=$requestId")
-        val profile = activeProfile ?: return
-        val loadTarget = activeLoadTarget ?: resolveBridgeLoadTarget(profile)
-        thread {
-            try {
-                val localResult = resolveFetchMethodPayload(method, request.optJSONObject("params"))
-                if (localResult !== UNHANDLED_LOCAL_METHOD) {
-                    val localObject =
-                        when (localResult) {
-                            is JSONObject -> localResult
-                            else -> JSONObject.wrap(localResult) as? JSONObject ?: JSONObject()
-                        }
-                    sendHostMessage(
-                        JSONObject()
-                            .put("type", "mcp-response")
-                            .put("hostId", LOCAL_HOST_ID)
-                            .put("id", request.opt("id"))
-                            .put("result", localObject)
-                            .put("message", JSONObject().put("id", request.opt("id")).put("result", localObject))
-                            .put("response", JSONObject().put("id", request.opt("id")).put("result", localObject)),
-                    )
-                    return@thread
-                }
-                val requestParams = request.optJSONObject("params") ?: JSONObject()
-                val requestAuthToken = if (loadTarget.usesLocalProxy) null else profile.authToken
-                val result =
-                    try {
-                        performAppServerMcpRequest(
-                            loadTarget = loadTarget,
-                            authToken = requestAuthToken,
-                            method = method,
-                            params = requestParams,
-                        )
-                    } catch (socketError: Exception) {
-                        android.util.Log.w(
-                            "CodexMobile",
-                            "app server websocket request failed; falling back to direct RPC for $method",
-                            socketError,
-                        )
-                        resetAppServerWebSocketClient()
-                        BridgeApi.performDirectRpcByBaseUrl(
-                            baseUrl = loadTarget.baseUrl,
-                            method = method,
-                            params = requestParams,
-                            authToken = requestAuthToken,
-                        )
-                    }
-                integrateDirectRpcResult(method, result)
-                android.util.Log.d("CodexMobile", "mcp response ok $method id=$requestId")
-                sendHostMessage(
-                    JSONObject()
-                        .put("type", "mcp-response")
-                        .put("hostId", LOCAL_HOST_ID)
-                        .put("id", request.opt("id"))
-                        .put(
-                            "result",
-                            result,
-                        )
-                        .put(
-                            "message",
-                            JSONObject().put("id", request.opt("id")).put("result", result),
-                        )
-                        .put(
-                            "response",
-                            JSONObject().put("id", request.opt("id")).put("result", result),
-                        ),
-                )
-                if (method == "turn/start") {
-                    val requestThreadId = request.optJSONObject("params")?.optString("threadId")?.trim().orEmpty()
-                    val responseTurnId = result.optJSONObject("turn")?.optString("id")?.trim().orEmpty()
-                    rememberPendingTurnCompletion(
-                        threadId = requestThreadId.ifEmpty { null },
-                        turnId = responseTurnId.ifEmpty { null },
-                    )
-                    if (requestThreadId.isNotEmpty()) {
-                        android.util.Log.d(
-                            "CodexMobile",
-                            "schedule turn fallback thread=$requestThreadId turn=$responseTurnId",
-                        )
-                        scheduleTurnCompletionFallback(
-                            threadId = requestThreadId,
-                            turnId = responseTurnId.ifEmpty { null },
-                            loadTarget = loadTarget,
-                            authToken = requestAuthToken,
-                        )
-                    }
-                } else {
-                    reconcileThreadSnapshotIfNeeded(
-                        method = method,
-                        result = result,
-                        loadTarget = loadTarget,
-                        authToken = requestAuthToken,
-                    )
-                }
-            } catch (error: Exception) {
-                android.util.Log.w("CodexMobile", "mcp response error $method id=$requestId", error)
-                val errorPayload = JSONObject().put("message", error.message ?: "MCP request failed.")
-                sendHostMessage(
-                    JSONObject()
-                        .put("type", "mcp-response")
-                        .put("hostId", LOCAL_HOST_ID)
-                        .put("id", request.opt("id"))
-                        .put("error", errorPayload)
-                        .put(
-                            "message",
-                            JSONObject().put("id", request.opt("id")).put("error", errorPayload),
-                        )
-                        .put(
-                            "response",
-                            JSONObject().put("id", request.opt("id")).put("error", errorPayload),
-                        ),
-                )
-            }
-        }
-    }
-
-    private fun handleWorkerBridgeMessage(payload: JSONObject) {
-        val workerId = payload.optString("workerId").trim()
-        val workerPayload = payload.optJSONObject("payload") ?: return
-        if (workerId.isEmpty() || workerPayload.optString("type") != "worker-request") {
-            return
-        }
-        val request = workerPayload.optJSONObject("request") ?: return
-        val requestId = request.optString("id").trim()
-        val method = request.optString("method").trim()
-        if (requestId.isEmpty() || method.isEmpty()) {
-            return
-        }
-        val response = JSONObject()
-            .put("type", "worker-response")
-            .put("workerId", workerId)
-            .put(
-                "response",
-                JSONObject()
-                    .put("id", requestId)
-                    .put("method", method)
-                    .put(
-                        "result",
-                        if (workerId == "git" && method == "stable-metadata") {
-                            JSONObject()
-                                .put("type", "ok")
-                                .put(
-                                    "value",
-                                    JSONObject()
-                                        .put("cwd", "")
-                                        .put("root", "")
-                                        .put("commonDir", "")
-                                        .put("gitDir", JSONObject.NULL)
-                                        .put("branch", JSONObject.NULL)
-                                        .put("upstreamBranch", JSONObject.NULL)
-                                        .put("headSha", JSONObject.NULL)
-                                        .put("originUrl", JSONObject.NULL)
-                                        .put("isRepository", false)
-                                        .put("isWorktree", false)
-                                        .put("worktreeRoot", ""),
-                                )
-                        } else {
-                            JSONObject()
-                                .put("type", "error")
-                                .put(
-                                    "error",
-                                    JSONObject().put("message", "Unsupported worker request: $workerId/$method"),
-                                )
-                        },
-                    ),
-            )
-        sendWorkerMessage(workerId, response)
-    }
-
     private inner class NativeHostJavascriptBridge {
         @JavascriptInterface
         fun postMessage(message: String) {
@@ -2417,235 +1344,13 @@ class NativeHostActivity : AppCompatActivity() {
                 "native bridge raw ${message.take(180)}",
             )
             runOnUiThread {
-                handleEnvelope(message)
+                webViewMessageRouter.handleEnvelope(message)
             }
         }
     }
 
     private fun openConnectionSheet() {
-        val dialog = BottomSheetDialog(this)
-        val content = LayoutInflater.from(this).inflate(R.layout.sheet_native_host_actions, null)
-        val titleView = content.findViewById<TextView>(R.id.nativeHostSheetTitle)
-        val bodyView = content.findViewById<TextView>(R.id.nativeHostSheetBody)
-        val metadataView = content.findViewById<View>(R.id.nativeHostSheetMetadata)
-        val metadataTitleView = content.findViewById<TextView>(R.id.nativeHostSheetMetadataTitle)
-        val metadataValueView = content.findViewById<TextView>(R.id.nativeHostSheetMetadataValue)
-        val primaryButton = content.findViewById<MaterialButton>(R.id.nativeHostSheetPrimaryAction)
-        val secondaryButton = content.findViewById<MaterialButton>(R.id.nativeHostSheetSecondaryAction)
-        val tertiaryButton = content.findViewById<MaterialButton>(R.id.nativeHostSheetTertiaryAction)
-        val savedConnectionsSection = content.findViewById<View>(R.id.nativeHostSheetConnectionsSection)
-        val savedConnectionsList = content.findViewById<LinearLayout>(R.id.nativeHostSheetConnectionsList)
-
-        val profile = activeProfile ?: profileStore.readActive()
-        val savedProfiles = profileStore.list()
-        if (profile == null) {
-            titleView.text = getString(R.string.native_host_sheet_connect_title)
-            bodyView.text = getString(R.string.native_host_sheet_connect_body)
-            metadataView.visibility = View.GONE
-            renderConnectionCards(
-                container = savedConnectionsList,
-                profiles = savedProfiles,
-                activeProfileId = null,
-            ) { nextProfile ->
-                dialog.dismiss()
-                activateProfile(nextProfile)
-            }
-            savedConnectionsSection.visibility =
-                if (savedProfiles.isEmpty()) {
-                    View.GONE
-                } else {
-                    View.VISIBLE
-                }
-            primaryButton.text = getString(R.string.native_host_sheet_action_scan)
-            primaryButton.setOnClickListener {
-                dialog.dismiss()
-                openScanner()
-            }
-            secondaryButton.visibility = View.GONE
-            tertiaryButton.visibility = View.GONE
-        } else {
-            titleView.text = getString(R.string.native_host_sheet_connected_title)
-            bodyView.text = getString(R.string.native_host_sheet_connected_body)
-            metadataView.visibility = View.VISIBLE
-            metadataTitleView.text = getString(R.string.native_host_sheet_current_bridge)
-            metadataValueView.text =
-                buildString {
-                    append(displayProfileLabel(profile))
-                    append('\n')
-                    append(profile.serverEndpoint)
-                    append("\n\n")
-                    append(getString(R.string.native_host_sheet_status))
-                    append(": ")
-                    append(currentStatusMessage)
-                }
-            renderConnectionCards(
-                container = savedConnectionsList,
-                profiles = savedProfiles,
-                activeProfileId = profile.id,
-            ) { nextProfile ->
-                dialog.dismiss()
-                activateProfile(nextProfile)
-            }
-            savedConnectionsSection.visibility =
-                if (savedProfiles.isEmpty()) {
-                    View.GONE
-                } else {
-                    View.VISIBLE
-                }
-            primaryButton.text = getString(R.string.native_host_sheet_action_reload)
-            primaryButton.setOnClickListener {
-                dialog.dismiss()
-                reloadActiveBridge()
-            }
-            secondaryButton.visibility = View.VISIBLE
-            secondaryButton.text = getString(R.string.native_host_sheet_action_rescan)
-            secondaryButton.setOnClickListener {
-                dialog.dismiss()
-                openScanner()
-            }
-            tertiaryButton.visibility = View.VISIBLE
-            tertiaryButton.text = getString(R.string.native_host_sheet_action_reset)
-            tertiaryButton.setOnClickListener {
-                dialog.dismiss()
-                confirmReset(profile)
-            }
-        }
-
-        dialog.setContentView(content)
-        dialog.show()
-    }
-
-    private fun renderConnectionCards(
-        container: LinearLayout,
-        profiles: List<BridgeProfile>,
-        activeProfileId: String?,
-        onActivate: (BridgeProfile) -> Unit,
-    ) {
-        container.removeAllViews()
-        profiles.forEachIndexed { index, profile ->
-            val card = LayoutInflater.from(this).inflate(R.layout.item_native_host_connection, container, false)
-            val layoutParams =
-                (card.layoutParams as? LinearLayout.LayoutParams)
-                    ?: LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                    )
-            layoutParams.topMargin =
-                if (index == 0) {
-                    0
-                } else {
-                    (10 * resources.displayMetrics.density).toInt()
-                }
-            card.layoutParams = layoutParams
-
-            val cardView = card as MaterialCardView
-            val avatarView = card.findViewById<TextView>(R.id.nativeHostConnectionAvatar)
-            val nameView = card.findViewById<TextView>(R.id.nativeHostConnectionName)
-            val endpointView = card.findViewById<TextView>(R.id.nativeHostConnectionEndpoint)
-            val badgeView = card.findViewById<TextView>(R.id.nativeHostConnectionBadge)
-            val modeView = card.findViewById<TextView>(R.id.nativeHostConnectionMode)
-            val chevronView = card.findViewById<ImageView>(R.id.nativeHostConnectionChevron)
-            val progressView = card.findViewById<LinearProgressIndicator>(R.id.nativeHostConnectionProgress)
-
-            avatarView.text = profileAvatar(profile)
-            nameView.text = displayProfileLabel(profile)
-            endpointView.text = displayProfileDetail(profile)
-            val isCurrent = profile.id == activeProfileId
-            val isConnecting = isCurrent && chromeState == ShellChromeState.LOADING
-            val isErrored = isCurrent && chromeState == ShellChromeState.ERROR
-            val badgeTextResId =
-                when {
-                    isConnecting -> R.string.native_host_sheet_connection_connecting_badge
-                    isErrored -> R.string.native_host_sheet_connection_error_badge
-                    isCurrent -> R.string.native_host_sheet_connection_current_badge
-                    else -> null
-                }
-            val badgeTone =
-                when {
-                    isConnecting -> ChipTone.ACTIVE
-                    isErrored -> ChipTone.WARNING
-                    isCurrent -> ChipTone.SUCCESS
-                    else -> null
-                }
-            if (badgeTextResId != null && badgeTone != null) {
-                badgeView.visibility = View.VISIBLE
-                badgeView.text = getString(badgeTextResId)
-                applyChipTone(badgeView, badgeTone)
-            } else {
-                badgeView.visibility = View.GONE
-            }
-            modeView.text =
-                when {
-                    isConnecting -> describeConnectingStatus(profile)
-                    isErrored -> summarizeWorkspaceError(currentStatusMessage)
-                    else -> describeProfileStatus(profile, isCurrent)
-                }
-            modeView.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                if (isConnecting || isErrored) 0 else R.drawable.ic_native_host_clock,
-                0,
-                0,
-                0,
-            )
-            progressView.visibility = if (isConnecting) View.VISIBLE else View.GONE
-            chevronView.visibility = if (isConnecting) View.GONE else View.VISIBLE
-            cardView.strokeWidth =
-                when {
-                    isConnecting -> (2 * resources.displayMetrics.density).toInt()
-                    isErrored -> (2 * resources.displayMetrics.density).toInt()
-                    else -> (1 * resources.displayMetrics.density).toInt()
-                }
-            cardView.strokeColor =
-                ContextCompat.getColor(
-                    this,
-                    when {
-                        isConnecting -> R.color.nativeHostAccent
-                        isErrored -> R.color.nativeHostWarning
-                        else -> R.color.nativeHostDivider
-                    },
-                )
-
-            val disableAction =
-                (isCurrent && chromeState == ShellChromeState.CONNECTED) || isConnecting
-            cardView.isEnabled = !disableAction
-            card.isClickable = !disableAction
-            card.isFocusable = !disableAction
-            card.setOnClickListener(
-                if (disableAction) {
-                    null
-                } else {
-                    View.OnClickListener { onActivate(profile) }
-                },
-            )
-
-            container.addView(card)
-        }
-    }
-
-    private fun confirmReset(profile: BridgeProfile) {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.native_host_reset_title)
-            .setMessage(getString(R.string.native_host_reset_body, profile.name))
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Reset") { _, _ ->
-                resetEnrollment(profile)
-            }
-            .show()
-    }
-
-    private fun resetEnrollment(profile: BridgeProfile) {
-        val nextProfile = profileStore.remove(profile.id)
-        syncSavedConnectionsState()
-        if (nextProfile == null) {
-            EnrollmentStore(applicationContext).clear()
-            startService(CodexTailnetService.stopIntent(this))
-            renderEmptyState(getString(R.string.native_host_status_idle))
-            return
-        }
-        if (nextProfile.tailnetEnrollmentPayload.isNullOrBlank()) {
-            EnrollmentStore(applicationContext).clear()
-            startService(CodexTailnetService.stopIntent(this))
-        }
-        openBridge(nextProfile)
+        connectionSheetController.openConnectionSheet()
     }
 
     private fun openScanner() {
@@ -2659,284 +1364,6 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun importEnrollment(rawJson: String) {
-        try {
-            when (val payload = EnrollmentParser.parse(rawJson)) {
-                is EnrollmentPayload.Bridge -> {
-                    updateConnectionProgress(
-                        profileName = payload.name,
-                        endpoint = payload.serverEndpoint,
-                        stage = ConnectionStage.PAYLOAD_RECEIVED,
-                        requiresPairing = !payload.pairingCode.isNullOrBlank(),
-                    )
-                    setStatus(getString(R.string.native_host_status_payload_received))
-                    saveBridgeProfile(
-                        name = payload.name,
-                        endpoint = payload.serverEndpoint,
-                        pairingCode = payload.pairingCode.orEmpty(),
-                        existingAuthToken = null,
-                        tailnetEnrollmentPayload = null,
-                    )
-                }
-
-                is EnrollmentPayload.Tailnet -> {
-                    updateConnectionProgress(
-                        profileName = payload.bridgeName,
-                        endpoint = payload.bridgeServerEndpoint,
-                        stage = ConnectionStage.PAYLOAD_RECEIVED,
-                        requiresPairing = !payload.pairingCode.isNullOrBlank(),
-                    )
-                    setStatus(getString(R.string.native_host_status_payload_received))
-                    val stagedPayload = parseTailnetEnrollmentPayload(payload.rawJson)
-                    val snapshot = CodexTailnetBridge.stage(applicationContext, stagedPayload)
-                    updateConnectionProgress(
-                        profileName = payload.bridgeName,
-                        endpoint = payload.bridgeServerEndpoint,
-                        stage = ConnectionStage.STARTING_TAILNET,
-                        requiresPairing = !payload.pairingCode.isNullOrBlank(),
-                    )
-                    setStatus(snapshot.message)
-                    ContextCompat.startForegroundService(
-                        this,
-                        CodexTailnetService.startIntent(this, payload.rawJson),
-                    )
-                    if (payload.bridgeServerEndpoint.isNotBlank()) {
-                        saveBridgeProfile(
-                            name = payload.bridgeName,
-                            endpoint = payload.bridgeServerEndpoint,
-                            pairingCode = payload.pairingCode.orEmpty(),
-                            existingAuthToken = null,
-                            tailnetEnrollmentPayload = payload.rawJson,
-                        )
-                    }
-                }
-            }
-        } catch (error: Exception) {
-            setStatus(normalizeErrorMessage(error))
-        }
-    }
-
-    private fun saveBridgeProfile(
-        name: String,
-        endpoint: String,
-        pairingCode: String,
-        existingAuthToken: String?,
-        tailnetEnrollmentPayload: String?,
-    ) {
-        setStatus(getString(R.string.native_host_status_preparing_connection))
-        thread {
-            try {
-                val normalizedEndpoint = BridgeApi.normalizeEndpoint(endpoint)
-                var authToken = existingAuthToken
-                runOnUiThread {
-                    updateConnectionProgress(
-                        profileName = name,
-                        endpoint = normalizedEndpoint,
-                        stage =
-                            if (BridgeApi.isLikelyTailnetEndpoint(normalizedEndpoint)) {
-                                ConnectionStage.STARTING_TAILNET
-                            } else if (pairingCode.isNotBlank()) {
-                                ConnectionStage.PAIRING_DEVICE
-                            } else {
-                                ConnectionStage.OPENING_WORKSPACE
-                            },
-                        requiresPairing = pairingCode.isNotBlank(),
-                    )
-                }
-                ensureTailnetRuntimeReady(normalizedEndpoint, tailnetEnrollmentPayload)
-                var connectionTarget = resolveBridgeLoadTarget(normalizedEndpoint, authToken, tailnetEnrollmentPayload)
-                var connection = BridgeApi.fetchConnectionTargetByBaseUrl(
-                    baseUrl = connectionTarget.baseUrl,
-                    authToken = if (connectionTarget.usesLocalProxy) null else authToken,
-                )
-                if (pairingCode.isNotBlank()) {
-                    runOnUiThread {
-                        updateConnectionProgress(
-                            profileName = name,
-                            endpoint = normalizedEndpoint,
-                            stage = ConnectionStage.PAIRING_DEVICE,
-                            requiresPairing = true,
-                        )
-                        setStatus(getString(R.string.native_host_status_pairing_device))
-                    }
-                    val pairing = BridgeApi.completeDevicePairingByBaseUrl(
-                        baseUrl = connectionTarget.baseUrl,
-                        pairingCode = pairingCode,
-                        authToken = if (connectionTarget.usesLocalProxy) null else authToken,
-                    )
-                    authToken = pairing.accessToken
-                    connectionTarget = resolveBridgeLoadTarget(normalizedEndpoint, authToken, tailnetEnrollmentPayload)
-                    connection = BridgeApi.fetchConnectionTargetByBaseUrl(
-                        baseUrl = connectionTarget.baseUrl,
-                        authToken = if (connectionTarget.usesLocalProxy) null else authToken,
-                    )
-                } else if (connection.authMode == "device-token" && authToken.isNullOrBlank()) {
-                    throw IllegalStateException(
-                        connection.localAuthPage?.let {
-                            "This bridge needs a fresh enrollment QR. Open $it on the bridge host."
-                        } ?: "This bridge needs to be re-enrolled from the bridge host.",
-                    )
-                }
-
-                val recommendedEndpoint = BridgeApi.normalizeEndpoint(connection.recommendedServerEndpoint)
-                val existingProfile =
-                    profileStore.list().firstOrNull {
-                        BridgeApi.normalizeEndpoint(it.serverEndpoint) == recommendedEndpoint &&
-                            (
-                                (!tailnetEnrollmentPayload.isNullOrBlank() && it.tailnetEnrollmentPayload == tailnetEnrollmentPayload) ||
-                                    it.name == name
-                                )
-                    }
-                val profile = BridgeProfile(
-                    id = existingProfile?.id ?: profileStore.createProfileId(name, recommendedEndpoint),
-                    name = name,
-                    serverEndpoint = recommendedEndpoint,
-                    authToken = authToken,
-                    tailnetEnrollmentPayload = tailnetEnrollmentPayload,
-                )
-                profileStore.write(profile)
-                syncSavedConnectionsState()
-                if (profile.tailnetEnrollmentPayload.isNullOrBlank()) {
-                    EnrollmentStore(applicationContext).clear()
-                    startService(CodexTailnetService.stopIntent(this))
-                }
-                runOnUiThread {
-                    updateConnectionProgress(
-                        profileName = profile.name,
-                        endpoint = profile.serverEndpoint,
-                        stage = ConnectionStage.OPENING_WORKSPACE,
-                        requiresPairing = pairingCode.isNotBlank(),
-                    )
-                    setStatus(getString(R.string.native_host_status_opening_workspace))
-                    openBridge(profile)
-                    setStatus("Connected to ${profile.serverEndpoint}")
-                }
-            } catch (error: Exception) {
-                android.util.Log.w("CodexMobile", "failed to save/open bridge profile", error)
-                runOnUiThread {
-                    setStatus(normalizeErrorMessage(error))
-                }
-            }
-        }
-    }
-
-    private fun resolveBridgeLoadTarget(profile: BridgeProfile): BridgeLoadTarget {
-        return resolveBridgeLoadTarget(
-            endpoint = profile.serverEndpoint,
-            authToken = profile.authToken,
-            tailnetEnrollmentPayload = profile.tailnetEnrollmentPayload,
-        )
-    }
-
-    private fun resolveBridgeLoadTarget(
-        endpoint: String,
-        authToken: String?,
-        tailnetEnrollmentPayload: String?,
-    ): BridgeLoadTarget {
-        val directBaseUrl = BridgeApi.deriveServerHttpBaseUrl(endpoint)
-        if (!BridgeApi.isLikelyTailnetEndpoint(endpoint)) {
-            return BridgeLoadTarget(
-                baseUrl = directBaseUrl,
-                usesLocalProxy = false,
-            )
-        }
-        val enrollment = tailnetEnrollmentForProfile(endpoint, tailnetEnrollmentPayload)
-        val matchesEnrollment = enrollment != null && matchesTailnetEnrollment(enrollment, endpoint)
-        ensureTailnetRuntimeReady(endpoint, tailnetEnrollmentPayload)
-        if (matchesEnrollment) {
-            android.util.Log.i("CodexMobile", "resolveBridgeLoadTarget ensuring tailnet service is running")
-            ContextCompat.startForegroundService(
-                this,
-                CodexTailnetService.startIntent(this, enrollment.rawPayload),
-            )
-        }
-
-        var lastSnapshot = CodexTailnetBridge.configureBridgeProxy(applicationContext, endpoint, authToken)
-        repeat(if (matchesEnrollment) 60 else 1) { attempt ->
-            lastSnapshot =
-                if (attempt == 0) {
-                    lastSnapshot
-                } else {
-                    Thread.sleep(250L)
-                    CodexTailnetBridge.configureBridgeProxy(applicationContext, endpoint, authToken)
-                }
-            val localProxyUrl = lastSnapshot.localProxyUrl?.trim().orEmpty()
-            if (localProxyUrl.isNotEmpty() && BridgeApi.isBridgeReadyByBaseUrl(localProxyUrl, null)) {
-                return BridgeLoadTarget(
-                    baseUrl = localProxyUrl,
-                    usesLocalProxy = true,
-                )
-            }
-            if (!matchesEnrollment && lastSnapshot.state == "error") {
-                throw IllegalStateException(describeTailnetState(lastSnapshot))
-            }
-        }
-        if (matchesEnrollment) {
-            throw IllegalStateException(describeTailnetState(lastSnapshot))
-        }
-        return BridgeLoadTarget(
-            baseUrl = directBaseUrl,
-            usesLocalProxy = false,
-        )
-    }
-
-    private fun ensureTailnetRuntimeReady(endpoint: String, tailnetEnrollmentPayload: String?) {
-        if (!BridgeApi.isLikelyTailnetEndpoint(endpoint)) {
-            return
-        }
-        val enrollment = tailnetEnrollmentForProfile(endpoint, tailnetEnrollmentPayload) ?: return
-        if (!matchesTailnetEnrollment(enrollment, endpoint)) {
-            return
-        }
-
-        var snapshot = CodexTailnetBridge.status(applicationContext)
-        if (isTailnetRuntimeRunning(snapshot)) {
-            return
-        }
-
-        ContextCompat.startForegroundService(
-            this,
-            CodexTailnetService.startIntent(this, enrollment.rawPayload),
-        )
-
-        repeat(60) {
-            Thread.sleep(250L)
-            snapshot = CodexTailnetBridge.status(applicationContext)
-            if (isTailnetRuntimeRunning(snapshot)) {
-                return
-            }
-            if (snapshot.state == "error") {
-                throw IllegalStateException(describeTailnetState(snapshot))
-            }
-        }
-        android.util.Log.w(
-            "CodexMobile",
-            "tailnet runtime did not report running before timeout; continuing to bridge proxy setup",
-        )
-    }
-
-    private fun tailnetEnrollmentForProfile(
-        endpoint: String,
-        tailnetEnrollmentPayload: String?,
-    ): TailnetEnrollmentPayload? {
-        val explicitPayload = tailnetEnrollmentPayload?.trim().orEmpty()
-        if (explicitPayload.isNotEmpty()) {
-            val enrollment = parseTailnetEnrollmentPayload(explicitPayload)
-            if (!matchesTailnetEnrollment(enrollment, endpoint)) {
-                throw IllegalStateException("Saved tailnet enrollment does not match $endpoint.")
-            }
-            return enrollment
-        }
-        return EnrollmentStore(applicationContext).readEnrollment()?.takeIf {
-            matchesTailnetEnrollment(it, endpoint)
-        }
-    }
-
-    private fun matchesTailnetEnrollment(
-        enrollment: TailnetEnrollmentPayload,
-        endpoint: String,
-    ): Boolean {
-        val target = BridgeApi.normalizeEndpoint(endpoint)
-        val enrolled = BridgeApi.normalizeEndpoint(enrollment.bridgeServerEndpoint)
-        return target.isNotBlank() && enrolled.isNotBlank() && target == enrolled
+        connectionCoordinator.importEnrollment(rawJson)
     }
 }

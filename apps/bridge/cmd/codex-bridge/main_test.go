@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/boomyao/codex-bridge/internal/config"
 	"github.com/boomyao/codex-bridge/internal/runtimestore"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 func TestResolveDesktopWebviewRootPrefersConfiguredRoot(t *testing.T) {
@@ -135,6 +137,32 @@ func TestExtractBundledDesktopWebviewRootUsesNpxAsarExtract(t *testing.T) {
 	}
 }
 
+func TestBuildStartupMobileQRMakesCompactTerminalQR(t *testing.T) {
+	payload := []byte(`{"type":"codex-mobile-enrollment","version":1,"bridgeName":"example","bridgeServerEndpoint":"ws://example.ts.net:8787","pairingCode":"12345678","tailnet":{"authKey":"tskey-auth-example-example-example"}}`)
+
+	compact, err := buildStartupMobileQR(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaultQR, err := qrcode.New(string(payload), qrcode.Medium)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compactWidth, compactHeight := qrStringDimensions(compact)
+	defaultWidth, defaultHeight := qrStringDimensions(defaultQR.ToSmallString(false))
+	if compactWidth >= defaultWidth && compactHeight >= defaultHeight {
+		t.Fatalf(
+			"expected compact QR to shrink terminal output, got compact %dx%d vs default %dx%d",
+			compactWidth,
+			compactHeight,
+			defaultWidth,
+			defaultHeight,
+		)
+	}
+}
+
 func writeDesktopWebviewRoot(t *testing.T, root string) {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -143,4 +171,16 @@ func writeDesktopWebviewRoot(t *testing.T, root string) {
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func qrStringDimensions(value string) (int, int) {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	height := len(lines)
+	width := 0
+	for _, line := range lines {
+		if len(line) > width {
+			width = len(line)
+		}
+	}
+	return width, height
 }

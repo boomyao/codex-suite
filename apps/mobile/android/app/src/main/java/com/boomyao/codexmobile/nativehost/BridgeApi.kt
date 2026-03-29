@@ -13,6 +13,11 @@ import java.nio.charset.StandardCharsets
 object BridgeApi {
     private const val DEFAULT_TIMEOUT_MS = 10_000
 
+    data class BridgeReadyProbe(
+        val ready: Boolean,
+        val errorMessage: String? = null,
+    )
+
     fun normalizeEndpoint(value: String): String = value.trim().trimEnd('/')
 
     fun deriveServerHttpBaseUrl(endpoint: String): String {
@@ -25,22 +30,8 @@ object BridgeApi {
         }
     }
 
-    fun buildRemoteShellUrl(endpoint: String): String {
-        return buildRemoteShellUrlFromBaseUrl(deriveServerHttpBaseUrl(endpoint))
-    }
-
     fun buildRemoteShellUrlFromBaseUrl(baseUrl: String): String {
         return "${normalizeEndpoint(baseUrl)}/ui/index.html"
-    }
-
-    fun fetchConnectionTarget(
-        endpoint: String,
-        authToken: String?,
-    ): ConnectionTargetResponse {
-        return fetchConnectionTargetByBaseUrl(
-            baseUrl = deriveServerHttpBaseUrl(endpoint),
-            authToken = authToken,
-        )
     }
 
     fun fetchConnectionTargetByBaseUrl(
@@ -63,18 +54,6 @@ object BridgeApi {
             recommendedServerEndpoint = recommendedServerEndpoint,
             authMode = if (auth?.optString("mode") == "device-token") "device-token" else "none",
             localAuthPage = localAuthPage,
-        )
-    }
-
-    fun completeDevicePairing(
-        endpoint: String,
-        pairingCode: String,
-        authToken: String?,
-    ): PairingResponse {
-        return completeDevicePairingByBaseUrl(
-            baseUrl = deriveServerHttpBaseUrl(endpoint),
-            pairingCode = pairingCode,
-            authToken = authToken,
         )
     }
 
@@ -157,14 +136,24 @@ object BridgeApi {
         baseUrl: String,
         authToken: String?,
     ): Boolean {
+        return probeBridgeReadyByBaseUrl(baseUrl, authToken).ready
+    }
+
+    fun probeBridgeReadyByBaseUrl(
+        baseUrl: String,
+        authToken: String?,
+    ): BridgeReadyProbe {
         return try {
             requestJson(
                 url = "${normalizeEndpoint(baseUrl)}/readyz",
                 authToken = authToken,
             )
-            true
-        } catch (_: Exception) {
-            false
+            BridgeReadyProbe(ready = true)
+        } catch (error: Exception) {
+            BridgeReadyProbe(
+                ready = false,
+                errorMessage = error.message?.trim().orEmpty().ifEmpty { null },
+            )
         }
     }
 
@@ -240,6 +229,10 @@ object BridgeApi {
             }.getOrNull().orEmpty()
             if (message.isNotEmpty()) {
                 throw IllegalStateException(message)
+            }
+            val fallbackText = text.trim()
+            if (fallbackText.isNotEmpty()) {
+                throw IllegalStateException(fallbackText)
             }
             throw IllegalStateException("Request failed with HTTP $responseCode.")
         }

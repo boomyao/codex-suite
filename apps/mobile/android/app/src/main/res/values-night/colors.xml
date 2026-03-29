@@ -1,5 +1,4 @@
 <resources>
-  <color name="nativeHostWindow">#08111B</color>
   <color name="nativeHostWindowStart">#0A1320</color>
   <color name="nativeHostWindowEnd">#0E1A29</color>
   <color name="nativeHostWindowSpotlight">#123C5D</color>
@@ -9,22 +8,15 @@
   <color name="nativeHostTextSecondary">#A4B6C9</color>
   <color name="nativeHostAccent">#6B9CFF</color>
   <color name="nativeHostAccentMuted">#1B3155</color>
-  <color name="nativeHostSuccess">#4CD1A8</color>
-  <color name="nativeHostSuccessMuted">#15352D</color>
   <color name="nativeHostWarning">#FFB36B</color>
-  <color name="nativeHostWarningMuted">#3C2513</color>
   <color name="nativeHostDivider">#233447</color>
   <color name="nativeHostDividerStrong">#4F6481</color>
   <color name="nativeHostWebSurface">#0C1722</color>
   <color name="nativeHostHeroStart">#071523</color>
   <color name="nativeHostHeroEnd">#0F2437</color>
   <color name="nativeHostHeroBorder">#29425C</color>
-  <color name="nativeHostHeroTextPrimary">#F7FBFF</color>
-  <color name="nativeHostHeroTextSecondary">#A8BAD0</color>
   <color name="nativeHostHeroBadgeSurface">#14314B</color>
   <color name="nativeHostHeroBadgeText">#BEE5FF</color>
-  <color name="nativeHostHeroCardSurface">#142739</color>
-  <color name="nativeHostHeroCardBorder">#324B66</color>
   <color name="nativeHostChipNeutralBg">#20324E</color>
   <color name="nativeHostChipNeutralText">#D7E5FF</color>
   <color name="nativeHostChipActiveBg">#143B56</color>
