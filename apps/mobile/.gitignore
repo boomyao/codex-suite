@@ -36,3 +36,17 @@ yarn-error.*
 # generated native folders
 /ios
 /tmp
+
+# generated icon assets
+/assets/icon.png
+/assets/favicon.png
+/assets/splash-icon.png
+/assets/android-icon-background.png
+/assets/android-icon-foreground.png
+/assets/android-icon-monochrome.png
+/android/app/src/main/res/mipmap-*/ic_launcher.png
+/android/app/src/main/res/mipmap-*/ic_launcher_round.png
+/android/app/src/main/res/mipmap-*/ic_launcher_background.png
+/android/app/src/main/res/mipmap-*/ic_launcher_foreground.png
+/android/app/src/main/res/mipmap-*/ic_launcher_monochrome.png
+/android/app/src/main/res/drawable-*/splashscreen_logo.png

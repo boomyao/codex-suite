@@ -99,6 +99,12 @@ tasks.register('buildGoSharedLib', Exec) {
     commandLine 'bash', './scripts/build_android_bridge.sh'
 }
 
+tasks.register('generateAndroidIconAssets', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'bash', './scripts/generate_android_icon_assets.sh'
+}
+
 tasks.named('preBuild').configure {
+    dependsOn(tasks.named('generateAndroidIconAssets'))
     dependsOn(tasks.named('buildGoSharedLib'))
 }
