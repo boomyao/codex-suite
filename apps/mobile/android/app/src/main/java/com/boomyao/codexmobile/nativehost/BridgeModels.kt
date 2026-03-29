@@ -8,6 +8,7 @@ data class BridgeProfile(
     val serverEndpoint: String,
     val authToken: String?,
     val tailnetEnrollmentPayload: String? = null,
+    val lastUsedAtMillis: Long? = null,
 )
 
 data class ConnectionTargetResponse(

@@ -27,19 +27,24 @@ class BridgeProfileStore(context: Context) {
     }
 
     fun write(profile: BridgeProfile) {
+        val now = System.currentTimeMillis()
+        val profileToSave = profile.copy(lastUsedAtMillis = profile.lastUsedAtMillis ?: now)
         val profiles = list().toMutableList()
-        val existingIndex = profiles.indexOfFirst { it.id == profile.id }
+        val existingIndex = profiles.indexOfFirst { it.id == profileToSave.id }
         if (existingIndex >= 0) {
-            profiles[existingIndex] = profile
+            profiles.removeAt(existingIndex)
         } else {
-            profiles.add(0, profile)
+            profiles.removeAll { it.id == profileToSave.id }
         }
-        persistProfiles(profiles, profile.id)
+        profiles.add(0, profileToSave)
+        persistProfiles(profiles, profileToSave.id)
     }
 
     fun setActive(profileId: String) {
-        val profiles = list()
-        val activeProfile = profiles.firstOrNull { it.id == profileId } ?: return
+        val profiles = list().toMutableList()
+        val activeProfile = profiles.firstOrNull { it.id == profileId }?.copy(lastUsedAtMillis = System.currentTimeMillis()) ?: return
+        profiles.removeAll { it.id == activeProfile.id }
+        profiles.add(0, activeProfile)
         persistProfiles(profiles, activeProfile.id)
     }
 
@@ -84,6 +89,7 @@ class BridgeProfileStore(context: Context) {
                             serverEndpoint = endpoint,
                             authToken = item.optString("authToken").trim().ifEmpty { null },
                             tailnetEnrollmentPayload = item.optString("tailnetEnrollmentPayload").trim().ifEmpty { null },
+                            lastUsedAtMillis = item.optLong("lastUsedAtMillis").takeIf { it > 0L },
                         ),
                     )
                 }
@@ -101,7 +107,8 @@ class BridgeProfileStore(context: Context) {
                             .put("name", profile.name)
                             .put("serverEndpoint", profile.serverEndpoint)
                             .put("authToken", profile.authToken)
-                            .put("tailnetEnrollmentPayload", profile.tailnetEnrollmentPayload),
+                            .put("tailnetEnrollmentPayload", profile.tailnetEnrollmentPayload)
+                            .put("lastUsedAtMillis", profile.lastUsedAtMillis)
                     )
                 }
             }
@@ -127,6 +134,7 @@ class BridgeProfileStore(context: Context) {
                 name = name,
                 serverEndpoint = endpoint,
                 authToken = authToken,
+                lastUsedAtMillis = System.currentTimeMillis(),
             )
         persistProfiles(listOf(profile), profile.id)
         return profile

@@ -24,6 +24,7 @@
         <data android:scheme="codexmobile"/>
       </intent-filter>
     </activity>
+    <activity android:name=".nativehost.PortraitCaptureActivity" android:exported="false" android:screenOrientation="portrait"/>
     <service android:name=".tailnet.CodexTailnetService" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE" android:foregroundServiceType="dataSync" android:stopWithTask="false">
       <intent-filter>
         <action android:name="android.net.VpnService"/>
