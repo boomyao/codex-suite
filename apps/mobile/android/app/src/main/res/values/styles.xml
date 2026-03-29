@@ -1,0 +1,18 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+  <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <item name="colorPrimary">@color/colorPrimary</item>
+    <item name="colorSecondary">@color/nativeHostAccent</item>
+    <item name="android:statusBarColor">@android:color/transparent</item>
+    <item name="android:navigationBarColor">@android:color/transparent</item>
+    <item name="bottomSheetDialogTheme">@style/ThemeOverlay.CodexMobile.BottomSheetDialog</item>
+  </style>
+  <style name="Theme.App.SplashScreen" parent="AppTheme">
+    <item name="android:windowBackground">@drawable/ic_launcher_background</item>
+  </style>
+  <style name="ThemeOverlay.CodexMobile.BottomSheetDialog" parent="ThemeOverlay.MaterialComponents.BottomSheetDialog">
+    <item name="bottomSheetStyle">@style/Widget.CodexMobile.BottomSheet</item>
+  </style>
+  <style name="Widget.CodexMobile.BottomSheet" parent="Widget.MaterialComponents.BottomSheet.Modal">
+    <item name="android:background">@android:color/transparent</item>
+  </style>
+</resources>

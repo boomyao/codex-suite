@@ -1,16 +1,20 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/boomyao/codex-bridge/internal/auth"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 const localAuthPagePath = "/auth/local"
+const localQRCodePath = "/auth/mobile-qr.png"
 
 func localAuthPageURL(state auth.State) string {
 	if state.Mode != "device-token" {
@@ -20,6 +24,9 @@ func localAuthPageURL(state auth.State) string {
 }
 
 func (b *Bridge) handleLocalAuthPage(w http.ResponseWriter, r *http.Request) bool {
+	if b.handleLocalQRCode(w, r) {
+		return true
+	}
 	if r.URL.Path != localAuthPagePath {
 		return false
 	}
@@ -32,17 +39,28 @@ func (b *Bridge) handleLocalAuthPage(w http.ResponseWriter, r *http.Request) boo
 		return true
 	}
 
-	_, exposureStatus, authState, info := b.snapshotStatus()
+	_, exposureStatus, authState, info, tailnetBootstrapStatusProvider := b.snapshotStatus()
+	var tailnetBootstrap map[string]any
+	if tailnetBootstrapStatusProvider != nil {
+		tailnetBootstrap = tailnetBootstrapStatusProvider()
+	}
 	bootstrap := map[string]any{
 		"auth":       authState,
 		"connection": buildConnectionTarget(exposureStatus, info),
+		"mobileEnrollment": map[string]any{
+			"tailnetEnabled": b.tailnetEnrollmentAvailable(exposureStatus),
+		},
 		"paths": map[string]string{
 			"status":        "/status",
 			"connect":       "/codex-mobile/connect",
 			"pairStart":     "/auth/pair/start",
 			"devices":       "/auth/devices",
 			"localAuthPage": localAuthPagePath,
+			"mobileQR":      localQRCodePath,
 		},
+	}
+	if tailnetBootstrap != nil {
+		bootstrap["tailnetBootstrap"] = tailnetBootstrap
 	}
 	body := []byte(buildLocalAuthPageHTML(bootstrap))
 	sendBody(w, r, http.StatusOK, body, "text/html; charset=utf-8")
@@ -56,6 +74,142 @@ func isLoopbackHTTPRequest(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func (b *Bridge) handleLocalQRCode(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != localQRCodePath {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		sendText(w, http.StatusMethodNotAllowed, "Method Not Allowed\n")
+		return true
+	}
+	if !isLoopbackHTTPRequest(r) {
+		sendText(w, http.StatusForbidden, "Local QR endpoint requires loopback access.\n")
+		return true
+	}
+
+	payload, err := b.BuildMobileEnrollmentPayload(r.URL.Query().Get("code"))
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return true
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
+			"error": "Failed to encode mobile enrollment payload.",
+		})
+		return true
+	}
+
+	image, err := qrcode.Encode(string(body), qrcode.Medium, 320)
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]any{
+			"ok":    false,
+			"error": "Failed to generate QR code.",
+		})
+		return true
+	}
+
+	sendBody(w, r, http.StatusOK, image, "image/png")
+	return true
+}
+
+func (b *Bridge) BuildMobileEnrollmentPayload(pairingCode string) (map[string]any, error) {
+	_, exposureStatus, authState, info, _ := b.snapshotStatus()
+	return b.buildMobileEnrollmentPayload(
+		buildConnectionTarget(exposureStatus, info),
+		exposureStatus,
+		authState,
+		pairingCode,
+	)
+}
+
+func (b *Bridge) buildMobileEnrollmentPayload(
+	connection map[string]any,
+	exposureStatus ExposureStatus,
+	authState auth.State,
+	pairingCode string,
+) (map[string]any, error) {
+	endpoint, _ := connection["recommendedServerEndpoint"].(string)
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return nil, fmt.Errorf("no reachable bridge endpoint is available for mobile enrollment")
+	}
+
+	useTailnetEnrollment := b.tailnetEnrollmentAvailable(exposureStatus)
+	authKey, err := b.authKeys.Resolve(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if useTailnetEnrollment && strings.TrimSpace(authKey) != "" {
+		payload := map[string]any{
+			"type":                 "codex-mobile-enrollment",
+			"version":              1,
+			"bridgeName":           deriveEnrollmentBridgeName(endpoint),
+			"bridgeServerEndpoint": strings.TrimSpace(endpoint),
+			"tailnet": map[string]any{
+				"authKey": strings.TrimSpace(authKey),
+			},
+		}
+		if controlURL := strings.TrimSpace(b.config.MobileEnrollment.ControlURL); controlURL != "" {
+			payload["tailnet"].(map[string]any)["controlUrl"] = controlURL
+		}
+		if hostname := strings.TrimSpace(b.config.MobileEnrollment.Hostname); hostname != "" {
+			payload["tailnet"].(map[string]any)["hostname"] = hostname
+		}
+		if loginMode := strings.TrimSpace(b.config.MobileEnrollment.LoginMode); loginMode != "" {
+			payload["tailnet"].(map[string]any)["loginMode"] = loginMode
+		}
+		if code := strings.TrimSpace(pairingCode); code != "" {
+			payload["pairingCode"] = code
+		}
+		return payload, nil
+	}
+
+	payload := map[string]any{
+		"type":           "codex-mobile-bridge",
+		"version":        1,
+		"name":           deriveEnrollmentBridgeName(endpoint),
+		"serverEndpoint": strings.TrimSpace(endpoint),
+		"authMode":       strings.TrimSpace(authState.Mode),
+	}
+	if code := strings.TrimSpace(pairingCode); code != "" {
+		payload["pairingCode"] = code
+	}
+	return payload, nil
+}
+
+func (b *Bridge) tailnetEnrollmentAvailable(exposureStatus ExposureStatus) bool {
+	if b == nil || b.authKeys == nil || !b.authKeys.Enabled() {
+		return false
+	}
+	if exposureStatus.Mode == "tailnet" && !exposureStatus.Ready {
+		return false
+	}
+	return true
+}
+
+func deriveEnrollmentBridgeName(endpoint string) string {
+	normalized := strings.TrimSpace(endpoint)
+	if normalized == "" {
+		return "Codex Bridge"
+	}
+	httpURL := normalized
+	if strings.HasPrefix(httpURL, "ws://") {
+		httpURL = "http://" + strings.TrimPrefix(httpURL, "ws://")
+	} else if strings.HasPrefix(httpURL, "wss://") {
+		httpURL = "https://" + strings.TrimPrefix(httpURL, "wss://")
+	}
+	parsed, err := url.Parse(httpURL)
+	if err == nil && strings.TrimSpace(parsed.Host) != "" {
+		return parsed.Host
+	}
+	return "Codex Bridge"
 }
 
 func buildLocalAuthPageHTML(bootstrap map[string]any) string {
@@ -340,6 +494,28 @@ func buildLocalAuthPageHTML(bootstrap map[string]any) string {
         color: var(--muted);
       }
 
+      .qr-shell {
+        display: grid;
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .qr-frame {
+        width: min(100%%, 320px);
+        aspect-ratio: 1;
+        border-radius: 20px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: inset 0 0 0 1px rgba(8, 18, 14, 0.08);
+      }
+
+      .qr-frame img {
+        display: block;
+        width: 100%%;
+        height: 100%%;
+        border-radius: 12px;
+      }
+
       .device-actions {
         display: flex;
         flex-wrap: wrap;
@@ -399,6 +575,17 @@ func buildLocalAuthPageHTML(bootstrap map[string]any) string {
           </div>
           <div class="flash" id="pairing-flash"></div>
         </article>
+
+        <article class="panel">
+          <h2>Scan in Codex Mobile</h2>
+          <div class="hint" id="qr-hint"></div>
+          <div class="qr-shell">
+            <div class="qr-frame hidden" id="qr-frame">
+              <img alt="Codex Mobile enrollment QR code" id="mobile-qr" />
+            </div>
+            <div class="empty" id="qr-empty"></div>
+          </div>
+        </article>
       </section>
 
       <section class="panel" style="margin-top: 18px;">
@@ -425,6 +612,10 @@ func buildLocalAuthPageHTML(bootstrap map[string]any) string {
       const pairingCode = document.getElementById("pairing-code");
       const pairingExpiry = document.getElementById("pairing-expiry");
       const pairingFlash = document.getElementById("pairing-flash");
+      const qrHint = document.getElementById("qr-hint");
+      const qrFrame = document.getElementById("qr-frame");
+      const qrImage = document.getElementById("mobile-qr");
+      const qrEmpty = document.getElementById("qr-empty");
       const devicesFlash = document.getElementById("devices-flash");
       const deviceList = document.getElementById("device-list");
       const startPairingButton = document.getElementById("start-pairing");
@@ -543,13 +734,48 @@ func buildLocalAuthPageHTML(bootstrap map[string]any) string {
         if (!state.pairing || !state.pairing.code) {
           pairingBox.classList.add("hidden");
           copyPairingButton.disabled = true;
+          renderEnrollmentQR();
           return;
         }
         pairingBox.classList.remove("hidden");
         pairingCode.textContent = state.pairing.code;
         pairingExpiry.textContent = "Expires at " + formatDate(state.pairing.expiresAt);
         copyPairingButton.disabled = false;
+        renderEnrollmentQR();
       }
+
+      function renderEnrollmentQR() {
+	        const requiresPairing = authInfo.mode === "device-token";
+	        const tailnetEnrollmentEnabled = !!(BOOTSTRAP.mobileEnrollment && BOOTSTRAP.mobileEnrollment.tailnetEnabled);
+	        const currentCode = state.pairing && typeof state.pairing.code === "string"
+	          ? state.pairing.code
+	          : "";
+
+	        if (requiresPairing && !currentCode) {
+	          qrHint.textContent = tailnetEnrollmentEnabled
+	            ? "Generate a pairing code first. The QR will then include an embedded tailnet enrollment payload for Codex Mobile."
+	            : "Generate a pairing code first. The QR will then include a one-step bridge enrollment payload for Codex Mobile.";
+	          qrFrame.classList.add("hidden");
+	          qrEmpty.textContent = "Waiting for pairing code.";
+	          return;
+        }
+
+        const params = new URLSearchParams();
+        if (currentCode) {
+          params.set("code", currentCode);
+        }
+        params.set("ts", String(Date.now()));
+        qrImage.src = BOOTSTRAP.paths.mobileQR + "?" + params.toString();
+	        qrFrame.classList.remove("hidden");
+	        qrEmpty.textContent = requiresPairing
+	          ? (tailnetEnrollmentEnabled
+	            ? "This QR includes the current pairing code, bridge endpoint, and embedded tailnet enrollment."
+	            : "This QR includes the current pairing code and bridge endpoint.")
+	          : (tailnetEnrollmentEnabled
+	            ? "This QR includes the bridge endpoint and embedded tailnet enrollment."
+	            : "This QR includes the bridge endpoint.");
+	        qrHint.textContent = "Open Codex Mobile, tap Scan QR, and point it at this code.";
+	      }
 
       async function refreshDevices() {
         try {
@@ -616,6 +842,7 @@ func buildLocalAuthPageHTML(bootstrap map[string]any) string {
 
       renderConnectionMeta();
       renderPairing();
+      renderEnrollmentQR();
       renderDevices();
       void refreshDevices();
     </script>

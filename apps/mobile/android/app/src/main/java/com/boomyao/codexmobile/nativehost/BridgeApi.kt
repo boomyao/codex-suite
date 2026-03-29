@@ -1,0 +1,248 @@
+package com.boomyao.codexmobile.nativehost
+
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.URL
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+
+object BridgeApi {
+    private const val DEFAULT_TIMEOUT_MS = 10_000
+
+    fun normalizeEndpoint(value: String): String = value.trim().trimEnd('/')
+
+    fun deriveServerHttpBaseUrl(endpoint: String): String {
+        val normalized = normalizeEndpoint(endpoint)
+        return when {
+            normalized.startsWith("ws://") -> "http://${normalized.removePrefix("ws://")}"
+            normalized.startsWith("wss://") -> "https://${normalized.removePrefix("wss://")}"
+            normalized.startsWith("http://") || normalized.startsWith("https://") -> normalized
+            else -> "http://$normalized"
+        }
+    }
+
+    fun buildRemoteShellUrl(endpoint: String): String {
+        return buildRemoteShellUrlFromBaseUrl(deriveServerHttpBaseUrl(endpoint))
+    }
+
+    fun buildRemoteShellUrlFromBaseUrl(baseUrl: String): String {
+        return "${normalizeEndpoint(baseUrl)}/ui/index.html"
+    }
+
+    fun fetchConnectionTarget(
+        endpoint: String,
+        authToken: String?,
+    ): ConnectionTargetResponse {
+        return fetchConnectionTargetByBaseUrl(
+            baseUrl = deriveServerHttpBaseUrl(endpoint),
+            authToken = authToken,
+        )
+    }
+
+    fun fetchConnectionTargetByBaseUrl(
+        baseUrl: String,
+        authToken: String?,
+    ): ConnectionTargetResponse {
+        val responseText = requestJson(
+            url = "${normalizeEndpoint(baseUrl)}/codex-mobile/connect",
+            authToken = authToken,
+        )
+        val payload = JSONObject(responseText)
+        val connection = payload.optJSONObject("connection")
+        val auth = payload.optJSONObject("auth")
+        val recommendedServerEndpoint =
+            connection?.optString("recommendedServerEndpoint")?.trim().orEmpty().ifEmpty {
+                normalizeEndpoint(baseUrl)
+            }
+        val localAuthPage = payload.optString("localAuthPage").trim().ifEmpty { null }
+        return ConnectionTargetResponse(
+            recommendedServerEndpoint = recommendedServerEndpoint,
+            authMode = if (auth?.optString("mode") == "device-token") "device-token" else "none",
+            localAuthPage = localAuthPage,
+        )
+    }
+
+    fun completeDevicePairing(
+        endpoint: String,
+        pairingCode: String,
+        authToken: String?,
+    ): PairingResponse {
+        return completeDevicePairingByBaseUrl(
+            baseUrl = deriveServerHttpBaseUrl(endpoint),
+            pairingCode = pairingCode,
+            authToken = authToken,
+        )
+    }
+
+    fun completeDevicePairingByBaseUrl(
+        baseUrl: String,
+        pairingCode: String,
+        authToken: String?,
+    ): PairingResponse {
+        val body = JSONObject()
+            .put("code", pairingCode.trim())
+            .put("deviceName", "Codex Mobile (Android Native Host)")
+            .toString()
+        val responseText = requestJson(
+            url = "${normalizeEndpoint(baseUrl)}/auth/pair/complete",
+            method = "POST",
+            authToken = authToken,
+            requestBody = body,
+        )
+        val payload = JSONObject(responseText)
+        val accessToken = payload.optString("accessToken").trim()
+        if (accessToken.isEmpty()) {
+            throw IllegalStateException("Pairing response did not include an access token.")
+        }
+        return PairingResponse(
+            accessToken = accessToken,
+            approved = payload.optBoolean("approved", false),
+        )
+    }
+
+    fun performDirectRpcByBaseUrl(
+        baseUrl: String,
+        method: String,
+        params: JSONObject?,
+        authToken: String?,
+    ): JSONObject {
+        val body = JSONObject()
+            .put("method", method)
+            .put("params", params ?: JSONObject())
+            .toString()
+        val responseText = requestJson(
+            url = "${normalizeEndpoint(baseUrl)}/codex-mobile/rpc",
+            method = "POST",
+            authToken = authToken,
+            requestBody = body,
+        )
+        val payload = JSONObject(responseText)
+        if (!payload.optBoolean("ok", false)) {
+            throw IllegalStateException(
+                payload.optString("error").trim().ifEmpty { "Direct RPC failed." },
+            )
+        }
+        return payload.optJSONObject("result") ?: JSONObject()
+    }
+
+    fun fetchGlobalStateSnapshotByBaseUrl(
+        baseUrl: String,
+        authToken: String?,
+    ): JSONObject {
+        var lastError: Exception? = null
+        repeat(6) { attempt ->
+            try {
+                return performDirectRpcByBaseUrl(
+                    baseUrl = baseUrl,
+                    method = "get-global-state-snapshot",
+                    params = JSONObject(),
+                    authToken = authToken,
+                )
+            } catch (error: Exception) {
+                lastError = error
+                if (attempt == 5) {
+                    throw error
+                }
+                Thread.sleep(250L)
+            }
+        }
+        throw lastError ?: IllegalStateException("Failed to fetch bridge global state snapshot.")
+    }
+
+    fun isBridgeReadyByBaseUrl(
+        baseUrl: String,
+        authToken: String?,
+    ): Boolean {
+        return try {
+            requestJson(
+                url = "${normalizeEndpoint(baseUrl)}/readyz",
+                authToken = authToken,
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun isLikelyTailnetEndpoint(endpoint: String): Boolean {
+        val normalized = normalizeEndpoint(endpoint)
+        if (normalized.isEmpty()) {
+            return false
+        }
+        val host = runCatching {
+            URL(deriveServerHttpBaseUrl(normalized)).host.trim().lowercase()
+        }.getOrNull().orEmpty()
+        if (host.isEmpty()) {
+            return false
+        }
+        if (host.endsWith(".ts.net")) {
+            return true
+        }
+        val decodedHost = runCatching {
+            URLDecoder.decode(host, StandardCharsets.UTF_8.name())
+        }.getOrDefault(host)
+        val parsedIp = runCatching {
+            java.net.InetAddress.getByName(decodedHost)
+        }.getOrNull() ?: return false
+        return when (parsedIp) {
+            is Inet4Address -> {
+                val bytes = parsedIp.address
+                bytes.size == 4 && bytes[0].toInt() and 0xff == 100 && (bytes[1].toInt() and 0xc0) == 64
+            }
+            is Inet6Address -> decodedHost.startsWith("fd7a:115c:a1e0:", ignoreCase = true)
+            else -> false
+        }
+    }
+
+    private fun requestJson(
+        url: String,
+        method: String = "GET",
+        authToken: String? = null,
+        requestBody: String? = null,
+    ): String {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.connectTimeout = DEFAULT_TIMEOUT_MS
+        connection.readTimeout = DEFAULT_TIMEOUT_MS
+        connection.requestMethod = method
+        connection.setRequestProperty("Accept", "application/json")
+        if (!authToken.isNullOrBlank()) {
+            connection.setRequestProperty("Authorization", "Bearer ${authToken.trim()}")
+        }
+        if (requestBody != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.outputStream.use { stream ->
+                stream.write(requestBody.toByteArray())
+            }
+        }
+
+        val responseCode = connection.responseCode
+        val stream = if (responseCode in 200..299) {
+            connection.inputStream
+        } else {
+            connection.errorStream ?: connection.inputStream
+        }
+        val text = BufferedReader(InputStreamReader(stream)).use { reader ->
+            buildString {
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    append(line)
+                }
+            }
+        }
+        if (responseCode !in 200..299) {
+            val message = runCatching {
+                JSONObject(text).optString("error").trim()
+            }.getOrNull().orEmpty()
+            if (message.isNotEmpty()) {
+                throw IllegalStateException(message)
+            }
+            throw IllegalStateException("Request failed with HTTP $responseCode.")
+        }
+        return text
+    }
+}

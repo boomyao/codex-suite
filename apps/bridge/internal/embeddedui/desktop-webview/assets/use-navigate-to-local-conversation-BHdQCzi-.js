@@ -1,2 +1,0 @@
-import{d as e}from"./chunk-OIYGIGL5-CmK-41Zj.js";import{n as t,o as n}from"./message-bus-DcBNa_PD.js";import{I as r}from"./app-scope-BIXChNbS.js";import{t as i}from"./initial-route-atom-_jj2dzad.js";var a=n();function o(){let n=(0,a.c)(2),o=e(),s;return n[0]===o?s=n[1]:(s=e=>{let n=`/local/${r(e)}`;i?t.dispatchMessage(`navigate-in-new-editor-tab`,{path:n}):o(n)},n[0]=o,n[1]=s),s}export{o as t};
-//# sourceMappingURL=use-navigate-to-local-conversation-BHdQCzi-.js.map

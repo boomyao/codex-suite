@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -160,6 +161,20 @@ func buildUiCSP(cfg Config, request *http.Request) string {
 	}, "; ")
 }
 
+func mobileWindowType(request *http.Request) string {
+	if request == nil {
+		return "electron"
+	}
+	cookie, err := request.Cookie("codex_mobile_host")
+	if err != nil {
+		return "electron"
+	}
+	if strings.TrimSpace(cookie.Value) != "" {
+		return "browser"
+	}
+	return "electron"
+}
+
 func rewriteDesktopIndexHTML(source string, cfg Config, request *http.Request) string {
 	prefix := normalizedUIPathPrefix(cfg.UIPathPrefix)
 	baseTag := fmt.Sprintf(`<base href="%s/">`, escapeHTMLAttribute(prefix))
@@ -168,11 +183,13 @@ func rewriteDesktopIndexHTML(source string, cfg Config, request *http.Request) s
 	if request.URL.Query().Get("codexTheme") == "light" {
 		theme = "light"
 	}
+	windowType := mobileWindowType(request)
 	preloadBootstrap := strings.Join([]string{
 		"<script>",
 		fmt.Sprintf("window.__codexMobileInitialTheme=%q;", theme),
-		`window.codexWindowType="electron";`,
-		`try{if(document&&document.documentElement){document.documentElement.setAttribute("data-codex-window-type","electron");}}catch(error){}`,
+		fmt.Sprintf("window.__codexMobileWindowType=%q;", windowType),
+		fmt.Sprintf("window.codexWindowType=%q;", windowType),
+		fmt.Sprintf(`try{if(document&&document.documentElement){document.documentElement.setAttribute("data-codex-window-type",%q);}}catch(error){}`, windowType),
 		"</script>",
 		`<script src="/codex-mobile/preload.js"></script>`,
 	}, "")
@@ -241,59 +258,18 @@ func escapeHTMLAttribute(value string) string {
 }
 
 func buildMobilePreloadScript() string {
-	return strings.TrimSpace(`
+	directRPCMethodsJSON, err := json.Marshal(MobileDirectRPCMethods)
+	if err != nil {
+		directRPCMethodsJSON = []byte("[]")
+	}
+	script := `
 (function () {
   var currentTheme = window.__codexMobileInitialTheme || "dark";
+  var hostWindowType = window.__codexMobileWindowType || "electron";
   var listenersByWorker = {};
   var themeListeners = [];
   var ENABLED_STATSIG_GATES = { "1609556872": true };
-  var directRpcMethods = [
-    "active-workspace-roots",
-    "account/read",
-    "account/rateLimits/read",
-    "account-info",
-    "app/list",
-    "codex-home",
-    "collaborationMode/list",
-    "config/read",
-    "developer-instructions",
-    "extension-info",
-    "fast-mode-rollout-metrics",
-    "get-configuration",
-    "get-copilot-api-proxy-info",
-    "get-global-state",
-    "gh-cli-status",
-    "gh-pr-status",
-    "git-origins",
-    "has-custom-cli-executable",
-    "hotkey-window-hotkey-state",
-    "ide-context",
-    "inbox-items",
-    "is-copilot-api-available",
-    "list-automations",
-    "list-pending-automation-run-threads",
-    "list-pinned-threads",
-    "local-custom-agents",
-    "local-environments",
-    "locale-info",
-    "mcpServerStatus/list",
-    "mcp-codex-config",
-    "model/list",
-    "open-in-targets",
-    "os-info",
-    "paths-exist",
-    "recommended-skills",
-    "remote-workspace-directory-entries",
-    "set-configuration",
-    "set-global-state",
-    "set-pinned-threads-order",
-    "set-thread-pinned",
-    "skills/list",
-    "thread-terminal-snapshot",
-    "thread/list",
-    "workspace-root-options",
-    "worktree-shell-environment-config"
-  ];
+  var directRpcMethods = __DIRECT_RPC_METHODS__;
   var directRpcInflight = Object.create(null);
   var directRpcCache = Object.create(null);
   var pendingBridgeRequests = Object.create(null);
@@ -306,7 +282,7 @@ func buildMobilePreloadScript() string {
   }
 
   function post(kind, payload) {
-    var bridge = window.ReactNativeWebView;
+    var bridge = window.CodexMobileNativeBridge;
     if (!bridge || typeof bridge.postMessage !== "function") {
       return;
     }
@@ -395,10 +371,10 @@ func buildMobilePreloadScript() string {
   }
 
   function ensureWindowType() {
-    window.codexWindowType = "electron";
+    window.codexWindowType = hostWindowType;
     try {
       if (document && document.documentElement) {
-        document.documentElement.setAttribute("data-codex-window-type", "electron");
+        document.documentElement.setAttribute("data-codex-window-type", hostWindowType);
       }
     } catch (error) {}
   }
@@ -1106,7 +1082,7 @@ func buildMobilePreloadScript() string {
   };
 
   window.electronBridge = {
-    windowType: "electron",
+    windowType: hostWindowType,
     sendMessageFromView: function (message) {
       var request = message && message.type === "mcp-request" ? message.request : null;
       if (request && typeof request.method === "string") {
@@ -1189,7 +1165,9 @@ func buildMobilePreloadScript() string {
   installSidebarLongPressContextMenu();
   post("preload-ready", { theme: currentTheme, href: window.location.href });
 })();
-`) + "\n"
+`
+	script = strings.Replace(script, "__DIRECT_RPC_METHODS__", string(directRPCMethodsJSON), 1)
+	return strings.TrimSpace(script) + "\n"
 }
 
 func rewriteUIJavaScriptAsset(relativePath string, source string) string {

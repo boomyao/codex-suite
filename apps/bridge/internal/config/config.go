@@ -64,9 +64,19 @@ type TunnelConfig struct {
 }
 
 type TailnetConfig struct {
-	Socket          string `json:"socket"`
-	Hostname        string `json:"hostname"`
-	AddressStrategy string `json:"addressStrategy"`
+	Socket                     string   `json:"socket"`
+	Hostname                   string   `json:"hostname"`
+	AddressStrategy            string   `json:"addressStrategy"`
+	MobileControlURL           string   `json:"mobileControlUrl"`
+	MobileAuthKey              string   `json:"mobileAuthKey"`
+	MobileAPIAccessToken       string   `json:"mobileApiAccessToken"`
+	MobileHostname             string   `json:"mobileHostname"`
+	MobileLoginMode            string   `json:"mobileLoginMode"`
+	MobileOAuthClientID        string   `json:"mobileOAuthClientId"`
+	MobileOAuthClientSecret    string   `json:"mobileOAuthClientSecret"`
+	MobileOAuthTailnet         string   `json:"mobileOAuthTailnet"`
+	MobileOAuthTags            []string `json:"mobileOAuthTags"`
+	MobileAuthKeyExpirySeconds int      `json:"mobileAuthKeyExpirySeconds"`
 }
 
 type AuthConfig struct {
@@ -105,7 +115,7 @@ func DefaultConfig() Config {
 			RestartDelayMS: 1500,
 		},
 		Exposure: ExposureConfig{
-			Mode:      ExposureModeLocal,
+			Mode:      ExposureModeTailnet,
 			AutoStart: true,
 			Tunnel: TunnelConfig{
 				SSHBinary:      "ssh",
@@ -120,19 +130,29 @@ func DefaultConfig() Config {
 				RestartDelayMS: 2000,
 			},
 			Tailnet: TailnetConfig{
-				Socket:          "",
-				Hostname:        "",
-				AddressStrategy: "auto",
+				Socket:                     "",
+				Hostname:                   "",
+				AddressStrategy:            "auto",
+				MobileControlURL:           "",
+				MobileAuthKey:              "",
+				MobileAPIAccessToken:       "",
+				MobileHostname:             "",
+				MobileLoginMode:            "",
+				MobileOAuthClientID:        "",
+				MobileOAuthClientSecret:    "",
+				MobileOAuthTailnet:         "",
+				MobileOAuthTags:            []string{},
+				MobileAuthKeyExpirySeconds: 600,
 			},
 		},
 		Auth: AuthConfig{
-			Mode:             AuthModeNone,
+			Mode:             AuthModeDeviceToken,
 			RequireApproval:  false,
 			DeviceStorePath:  "",
 			PairingCodeTTLMS: 300000,
 		},
 		Gateway: GatewayConfig{
-			Host:               "127.0.0.1",
+			Host:               "0.0.0.0",
 			Port:               8787,
 			DesktopWebviewRoot: "",
 			UIPathPrefix:       "/ui",
@@ -225,6 +245,36 @@ func EnvConfig() map[string]any {
 	if value := envString("CODEX_EXPOSURE_TAILNET_ADDRESS_STRATEGY"); value != "" {
 		tailnetCfg["addressStrategy"] = value
 	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_CONTROL_URL"); value != "" {
+		tailnetCfg["mobileControlUrl"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_AUTH_KEY"); value != "" {
+		tailnetCfg["mobileAuthKey"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN"); value != "" {
+		tailnetCfg["mobileApiAccessToken"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_HOSTNAME"); value != "" {
+		tailnetCfg["mobileHostname"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_LOGIN_MODE"); value != "" {
+		tailnetCfg["mobileLoginMode"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_CLIENT_ID"); value != "" {
+		tailnetCfg["mobileOAuthClientId"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_CLIENT_SECRET"); value != "" {
+		tailnetCfg["mobileOAuthClientSecret"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_TAILNET"); value != "" {
+		tailnetCfg["mobileOAuthTailnet"] = value
+	}
+	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_TAGS"); value != "" {
+		tailnetCfg["mobileOAuthTags"] = normalizeCSVStringArray(value)
+	}
+	if value := envInt("CODEX_EXPOSURE_TAILNET_MOBILE_AUTH_KEY_EXPIRY_SECONDS"); value != nil {
+		tailnetCfg["mobileAuthKeyExpirySeconds"] = *value
+	}
 	if len(tailnetCfg) > 0 {
 		exposureCfg["tailnet"] = tailnetCfg
 	}
@@ -307,9 +357,19 @@ func ConfigToMap(cfg Config) map[string]any {
 				"restartDelayMs": cfg.Exposure.Tunnel.RestartDelayMS,
 			},
 			"tailnet": map[string]any{
-				"socket":          cfg.Exposure.Tailnet.Socket,
-				"hostname":        cfg.Exposure.Tailnet.Hostname,
-				"addressStrategy": cfg.Exposure.Tailnet.AddressStrategy,
+				"socket":                     cfg.Exposure.Tailnet.Socket,
+				"hostname":                   cfg.Exposure.Tailnet.Hostname,
+				"addressStrategy":            cfg.Exposure.Tailnet.AddressStrategy,
+				"mobileControlUrl":           cfg.Exposure.Tailnet.MobileControlURL,
+				"mobileAuthKey":              cfg.Exposure.Tailnet.MobileAuthKey,
+				"mobileApiAccessToken":       cfg.Exposure.Tailnet.MobileAPIAccessToken,
+				"mobileHostname":             cfg.Exposure.Tailnet.MobileHostname,
+				"mobileLoginMode":            cfg.Exposure.Tailnet.MobileLoginMode,
+				"mobileOAuthClientId":        cfg.Exposure.Tailnet.MobileOAuthClientID,
+				"mobileOAuthClientSecret":    cfg.Exposure.Tailnet.MobileOAuthClientSecret,
+				"mobileOAuthTailnet":         cfg.Exposure.Tailnet.MobileOAuthTailnet,
+				"mobileOAuthTags":            append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
+				"mobileAuthKeyExpirySeconds": cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds,
 			},
 		},
 		"auth": map[string]any{
@@ -407,6 +467,36 @@ func NormalizeConfig(input map[string]any) (Config, error) {
 	if value, ok := stringValue(tailnetCfg, "addressStrategy"); ok && value != "" {
 		cfg.Exposure.Tailnet.AddressStrategy = value
 	}
+	if value, ok := stringValue(tailnetCfg, "mobileControlUrl"); ok {
+		cfg.Exposure.Tailnet.MobileControlURL = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileAuthKey"); ok {
+		cfg.Exposure.Tailnet.MobileAuthKey = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileApiAccessToken"); ok {
+		cfg.Exposure.Tailnet.MobileAPIAccessToken = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileHostname"); ok {
+		cfg.Exposure.Tailnet.MobileHostname = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileLoginMode"); ok {
+		cfg.Exposure.Tailnet.MobileLoginMode = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileOAuthClientId"); ok {
+		cfg.Exposure.Tailnet.MobileOAuthClientID = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileOAuthClientSecret"); ok {
+		cfg.Exposure.Tailnet.MobileOAuthClientSecret = value
+	}
+	if value, ok := stringValue(tailnetCfg, "mobileOAuthTailnet"); ok {
+		cfg.Exposure.Tailnet.MobileOAuthTailnet = value
+	}
+	if value, exists := tailnetCfg["mobileOAuthTags"]; exists {
+		cfg.Exposure.Tailnet.MobileOAuthTags = normalizeCSVStringArray(value)
+	}
+	if value, ok := normalizeInt(tailnetCfg["mobileAuthKeyExpirySeconds"]); ok {
+		cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds = value
+	}
 
 	authCfg := mapValue(input, "auth")
 	if value, ok := stringValue(authCfg, "mode"); ok && value != "" {
@@ -470,7 +560,10 @@ func SaveConfig(configPath string, cfg Config) error {
 		return err
 	}
 	body = append(body, '\n')
-	return os.WriteFile(configPath, body, 0o644)
+	if err := os.WriteFile(configPath, body, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(configPath, 0o600)
 }
 
 func validateConfig(cfg Config) error {
@@ -538,6 +631,39 @@ func validateConfig(cfg Config) error {
 	case "auto", "dns", "ipv4", "ipv6":
 	default:
 		return fmt.Errorf("unsupported exposure.tailnet.addressStrategy %q", cfg.Exposure.Tailnet.AddressStrategy)
+	}
+	if value := strings.TrimSpace(cfg.Exposure.Tailnet.MobileControlURL); value != "" {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return fmt.Errorf("exposure.tailnet.mobileControlUrl must be a valid http:// or https:// URL: %w", err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return errors.New("exposure.tailnet.mobileControlUrl must use http:// or https://")
+		}
+		if strings.TrimSpace(parsed.Host) == "" {
+			return errors.New("exposure.tailnet.mobileControlUrl must include a host")
+		}
+	}
+	if cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds <= 0 {
+		return errors.New("exposure.tailnet.mobileAuthKeyExpirySeconds must be a positive integer")
+	}
+	hasOAuthField := strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID) != "" ||
+		strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientSecret) != "" ||
+		strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthTailnet) != "" ||
+		len(cfg.Exposure.Tailnet.MobileOAuthTags) > 0
+	if hasOAuthField {
+		if strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID) == "" {
+			return errors.New("exposure.tailnet.mobileOAuthClientId is required when tailnet mobile OAuth provisioning is configured")
+		}
+		if strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientSecret) == "" {
+			return errors.New("exposure.tailnet.mobileOAuthClientSecret is required when tailnet mobile OAuth provisioning is configured")
+		}
+		if strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthTailnet) == "" {
+			return errors.New("exposure.tailnet.mobileOAuthTailnet is required when tailnet mobile OAuth provisioning is configured")
+		}
+		if len(cfg.Exposure.Tailnet.MobileOAuthTags) == 0 {
+			return errors.New("exposure.tailnet.mobileOAuthTags must include at least one tag when tailnet mobile OAuth provisioning is configured")
+		}
 	}
 
 	switch cfg.Auth.Mode {
@@ -659,6 +785,45 @@ func normalizeStringArray(value any) []string {
 	case string:
 		fields := strings.Fields(typed)
 		return append([]string{}, fields...)
+	default:
+		return []string{}
+	}
+}
+
+func normalizeCSVStringArray(value any) []string {
+	switch typed := value.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if stringValue, ok := item.(string); ok {
+				stringValue = strings.TrimSpace(stringValue)
+				if stringValue != "" {
+					out = append(out, stringValue)
+				}
+			}
+		}
+		return out
+	case string:
+		parts := strings.FieldsFunc(typed, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		})
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
 	default:
 		return []string{}
 	}

@@ -154,11 +154,10 @@ func (a *DeviceTokenAuthorizer) HandleHTTP(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (a *DeviceTokenAuthorizer) handlePairStart(w http.ResponseWriter) {
+func (a *DeviceTokenAuthorizer) GeneratePairingCode() (PairingInfo, error) {
 	code, err := randomDigits(8)
 	if err != nil {
-		sendJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
-		return
+		return PairingInfo{}, err
 	}
 
 	expiresAt := time.Now().UTC().Add(a.pairingCodeTTL)
@@ -169,11 +168,25 @@ func (a *DeviceTokenAuthorizer) handlePairStart(w http.ResponseWriter) {
 	}
 	a.mu.Unlock()
 
+	return PairingInfo{
+		Code:            code,
+		ExpiresAt:       expiresAt,
+		RequireApproval: a.requireApproval,
+	}, nil
+}
+
+func (a *DeviceTokenAuthorizer) handlePairStart(w http.ResponseWriter) {
+	info, err := a.GeneratePairingCode()
+	if err != nil {
+		sendJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+
 	sendJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
-		"code":            code,
-		"expiresAt":       expiresAt,
-		"requireApproval": a.requireApproval,
+		"code":            info.Code,
+		"expiresAt":       info.ExpiresAt,
+		"requireApproval": info.RequireApproval,
 	})
 }
 
@@ -392,6 +405,11 @@ func extractBearerToken(r *http.Request) string {
 	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(authorization, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
+	}
+	if cookie, err := r.Cookie("codex_bridge_token"); err == nil {
+		if value := strings.TrimSpace(cookie.Value); value != "" {
+			return value
+		}
 	}
 	return ""
 }

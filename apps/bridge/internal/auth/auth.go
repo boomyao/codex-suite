@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"net/http"
+	"time"
 )
 
 type State struct {
@@ -15,6 +16,12 @@ type SessionInfo struct {
 	Reason     string `json:"reason,omitempty"`
 	DeviceID   string `json:"deviceId,omitempty"`
 	DeviceName string `json:"deviceName,omitempty"`
+}
+
+type PairingInfo struct {
+	Code            string    `json:"code"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+	RequireApproval bool      `json:"requireApproval"`
 }
 
 type Authorizer interface {

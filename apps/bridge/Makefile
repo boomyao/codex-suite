@@ -4,13 +4,16 @@ VERSION ?= dev
 PLATFORM ?= $(shell $(GO) env GOOS)-$(shell arch | sed 's/aarch64/arm64/; s/x86_64/x64/; s/amd64/x64/')
 OUT_DIR ?= dist
 
-.PHONY: build run check print-config init-config package-release
+.PHONY: build run stop check print-config init-config package-release
 
 build:
 	$(GO) build ./...
 
 run:
 	$(GO) run ./cmd/codex-bridge start
+
+stop:
+	$(GO) run ./cmd/codex-bridge stop
 
 check:
 	$(GO) fmt ./...

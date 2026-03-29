@@ -1,0 +1,143 @@
+package com.boomyao.codexmobile.nativehost
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlin.math.abs
+
+class BridgeProfileStore(context: Context) {
+    private val preferences =
+        context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+
+    fun list(): List<BridgeProfile> {
+        val rawProfiles = preferences.getString(KEY_PROFILES_JSON, null)?.trim().orEmpty()
+        if (rawProfiles.isNotEmpty()) {
+            return parseProfiles(rawProfiles)
+        }
+        return migrateLegacyProfile()?.let(::listOf).orEmpty()
+    }
+
+    fun readActive(): BridgeProfile? {
+        val profiles = list()
+        if (profiles.isEmpty()) {
+            return null
+        }
+        val activeProfileId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)?.trim().orEmpty()
+        return profiles.firstOrNull { it.id == activeProfileId } ?: profiles.firstOrNull()
+    }
+
+    fun write(profile: BridgeProfile) {
+        val profiles = list().toMutableList()
+        val existingIndex = profiles.indexOfFirst { it.id == profile.id }
+        if (existingIndex >= 0) {
+            profiles[existingIndex] = profile
+        } else {
+            profiles.add(0, profile)
+        }
+        persistProfiles(profiles, profile.id)
+    }
+
+    fun setActive(profileId: String) {
+        val profiles = list()
+        val activeProfile = profiles.firstOrNull { it.id == profileId } ?: return
+        persistProfiles(profiles, activeProfile.id)
+    }
+
+    fun remove(profileId: String): BridgeProfile? {
+        val remainingProfiles = list().filterNot { it.id == profileId }
+        val currentActiveId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)?.trim().orEmpty()
+        val nextActiveId =
+            when {
+                remainingProfiles.isEmpty() -> null
+                currentActiveId == profileId -> remainingProfiles.first().id
+                remainingProfiles.any { it.id == currentActiveId } -> currentActiveId
+                else -> remainingProfiles.first().id
+            }
+        persistProfiles(remainingProfiles, nextActiveId)
+        return remainingProfiles.firstOrNull { it.id == nextActiveId }
+    }
+
+    fun clear() {
+        preferences.edit().clear().apply()
+    }
+
+    fun createProfileId(name: String, endpoint: String): String {
+        val seed = "${name.trim()}|${endpoint.trim()}|${System.currentTimeMillis()}"
+        return "bridge_${System.currentTimeMillis()}_${abs(seed.hashCode())}"
+    }
+
+    private fun parseProfiles(rawProfiles: String): List<BridgeProfile> {
+        return runCatching {
+            val root = JSONArray(rawProfiles)
+            buildList {
+                for (index in 0 until root.length()) {
+                    val item = root.optJSONObject(index) ?: continue
+                    val id = item.optString("id").trim()
+                    val endpoint = item.optString("serverEndpoint").trim()
+                    if (id.isEmpty() || endpoint.isEmpty()) {
+                        continue
+                    }
+                    add(
+                        BridgeProfile(
+                            id = id,
+                            name = item.optString("name").trim().ifEmpty { endpoint },
+                            serverEndpoint = endpoint,
+                            authToken = item.optString("authToken").trim().ifEmpty { null },
+                            tailnetEnrollmentPayload = item.optString("tailnetEnrollmentPayload").trim().ifEmpty { null },
+                        ),
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun persistProfiles(profiles: List<BridgeProfile>, activeProfileId: String?) {
+        val serializedProfiles =
+            JSONArray().apply {
+                profiles.forEach { profile ->
+                    put(
+                        JSONObject()
+                            .put("id", profile.id)
+                            .put("name", profile.name)
+                            .put("serverEndpoint", profile.serverEndpoint)
+                            .put("authToken", profile.authToken)
+                            .put("tailnetEnrollmentPayload", profile.tailnetEnrollmentPayload),
+                    )
+                }
+            }
+        preferences.edit()
+            .putString(KEY_PROFILES_JSON, serializedProfiles.toString())
+            .putString(KEY_ACTIVE_PROFILE_ID, activeProfileId)
+            .remove(KEY_NAME)
+            .remove(KEY_SERVER_ENDPOINT)
+            .remove(KEY_AUTH_TOKEN)
+            .apply()
+    }
+
+    private fun migrateLegacyProfile(): BridgeProfile? {
+        val endpoint = preferences.getString(KEY_SERVER_ENDPOINT, null)?.trim().orEmpty()
+        if (endpoint.isEmpty()) {
+            return null
+        }
+        val name = preferences.getString(KEY_NAME, null)?.trim().orEmpty().ifEmpty { endpoint }
+        val authToken = preferences.getString(KEY_AUTH_TOKEN, null)?.trim()?.ifEmpty { null }
+        val profile =
+            BridgeProfile(
+                id = createProfileId(name, endpoint),
+                name = name,
+                serverEndpoint = endpoint,
+                authToken = authToken,
+            )
+        persistProfiles(listOf(profile), profile.id)
+        return profile
+    }
+
+    companion object {
+        private const val PREFERENCES_NAME = "codex_native_host"
+        private const val KEY_NAME = "name"
+        private const val KEY_SERVER_ENDPOINT = "server_endpoint"
+        private const val KEY_AUTH_TOKEN = "auth_token"
+        private const val KEY_PROFILES_JSON = "profiles_json"
+        private const val KEY_ACTIVE_PROFILE_ID = "active_profile_id"
+    }
+}

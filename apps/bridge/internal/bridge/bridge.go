@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,67 +22,75 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var UpstreamDirectRPCMethods = map[string]struct{}{
-	"account/read":            {},
-	"account/rateLimits/read": {},
-	"app/list":                {},
-	"collaborationMode/list":  {},
-	"config/read":             {},
-	"mcpServerStatus/list":    {},
-	"model/list":              {},
-	"skills/list":             {},
-	"thread/list":             {},
+var localDirectRPCMethodNames = []string{
+	"active-workspace-roots",
+	"account-info",
+	"app/list",
+	"codex-home",
+	"developer-instructions",
+	"experimentalFeature/list",
+	"extension-info",
+	"fast-mode-rollout-metrics",
+	"get-configuration",
+	"get-copilot-api-proxy-info",
+	"get-global-state",
+	"gh-cli-status",
+	"gh-pr-status",
+	"git-origins",
+	"has-custom-cli-executable",
+	"hotkey-window-hotkey-state",
+	"ide-context",
+	"inbox-items",
+	"is-copilot-api-available",
+	"list-automations",
+	"list-pending-automation-run-threads",
+	"list-pinned-threads",
+	"local-custom-agents",
+	"local-environments",
+	"locale-info",
+	"mcp-codex-config",
+	"open-in-targets",
+	"os-info",
+	"paths-exist",
+	"recommended-skills",
+	"remote-workspace-directory-entries",
+	"set-configuration",
+	"set-global-state",
+	"set-pinned-threads-order",
+	"set-thread-pinned",
+	"thread-terminal-snapshot",
+	"workspace-root-options",
+	"worktree-shell-environment-config",
 }
 
-var LocalDirectRPCMethods = map[string]struct{}{
-	"active-workspace-roots":              {},
-	"account-info":                        {},
-	"codex-home":                          {},
-	"developer-instructions":              {},
-	"extension-info":                      {},
-	"fast-mode-rollout-metrics":           {},
-	"get-configuration":                   {},
-	"get-copilot-api-proxy-info":          {},
-	"get-global-state":                    {},
-	"gh-cli-status":                       {},
-	"gh-pr-status":                        {},
-	"has-custom-cli-executable":           {},
-	"hotkey-window-hotkey-state":          {},
-	"ide-context":                         {},
-	"inbox-items":                         {},
-	"is-copilot-api-available":            {},
-	"list-automations":                    {},
-	"list-pending-automation-run-threads": {},
-	"list-pinned-threads":                 {},
-	"local-custom-agents":                 {},
-	"local-environments":                  {},
-	"locale-info":                         {},
-	"mcp-codex-config":                    {},
-	"open-in-targets":                     {},
-	"os-info":                             {},
-	"paths-exist":                         {},
-	"recommended-skills":                  {},
-	"remote-workspace-directory-entries":  {},
-	"set-configuration":                   {},
-	"set-global-state":                    {},
-	"set-pinned-threads-order":            {},
-	"set-thread-pinned":                   {},
-	"thread-terminal-snapshot":            {},
-	"git-origins":                         {},
-	"workspace-root-options":              {},
-	"worktree-shell-environment-config":   {},
+var passthroughMobileDirectRPCMethods = []string{
+	"account/read",
+	"account/rateLimits/read",
+	"collaborationMode/list",
+	"config/read",
+	"mcpServerStatus/list",
+	"model/list",
+	"skills/list",
+	"thread/list",
 }
 
-var DirectRPCMethods = func() map[string]struct{} {
-	methods := make(map[string]struct{}, len(UpstreamDirectRPCMethods)+len(LocalDirectRPCMethods))
-	for method := range UpstreamDirectRPCMethods {
-		methods[method] = struct{}{}
+var MobileDirectRPCMethods = append(
+	append([]string{}, localDirectRPCMethodNames...),
+	passthroughMobileDirectRPCMethods...,
+)
+
+var LocalDirectRPCMethods = sliceToSet(append(
+	append([]string{}, localDirectRPCMethodNames...),
+	"get-global-state-snapshot",
+))
+
+func sliceToSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
 	}
-	for method := range LocalDirectRPCMethods {
-		methods[method] = struct{}{}
-	}
-	return methods
-}()
+	return result
+}
 
 type localDirectRPCState struct {
 	mu                 sync.Mutex
@@ -101,6 +110,20 @@ type Config struct {
 	ProbeCacheTTL      time.Duration
 	DesktopWebviewRoot string
 	UIPathPrefix       string
+	MobileEnrollment   MobileEnrollmentConfig
+}
+
+type MobileEnrollmentConfig struct {
+	ControlURL           string
+	AuthKey              string
+	APIAccessToken       string
+	Hostname             string
+	LoginMode            string
+	OAuthClientID        string
+	OAuthClientSecret    string
+	OAuthTailnet         string
+	OAuthTags            []string
+	AuthKeyExpirySeconds int
 }
 
 type Info struct {
@@ -139,19 +162,21 @@ type readiness struct {
 }
 
 type Bridge struct {
-	config      Config
-	logger      *log.Logger
-	server      *http.Server
-	healthState *healthState
-	upgrader    websocket.Upgrader
-	closeOnce   sync.Once
-	mu          sync.Mutex
-	localState  *localDirectRPCState
-	info        *Info
-	runtime     RuntimeStatus
-	exposure    ExposureStatus
-	auth        auth.State
-	authorizer  auth.Authorizer
+	config                         Config
+	logger                         *log.Logger
+	server                         *http.Server
+	healthState                    *healthState
+	upgrader                       websocket.Upgrader
+	closeOnce                      sync.Once
+	mu                             sync.Mutex
+	localState                     *localDirectRPCState
+	info                           *Info
+	runtime                        RuntimeStatus
+	exposure                       ExposureStatus
+	auth                           auth.State
+	authorizer                     auth.Authorizer
+	authKeys                       *mobileAuthKeyProvider
+	tailnetBootstrapStatusProvider func() map[string]any
 }
 
 func New(config Config, logger *log.Logger) *Bridge {
@@ -194,6 +219,7 @@ func New(config Config, logger *log.Logger) *Bridge {
 			Mode: "none",
 		},
 		authorizer: auth.NewNoopAuthorizer(),
+		authKeys:   newMobileAuthKeyProvider(config.MobileEnrollment, logger),
 	}
 }
 
@@ -284,32 +310,58 @@ func (b *Bridge) SetAuthorizer(authorizer auth.Authorizer) {
 	b.auth = authorizer.State()
 }
 
-func (b *Bridge) snapshotStatus() (RuntimeStatus, ExposureStatus, auth.State, *Info) {
+func (b *Bridge) SetMobileEnrollmentConfig(config MobileEnrollmentConfig) {
+	b.mu.Lock()
+	b.config.MobileEnrollment = config
+	authKeys := b.authKeys
+	b.mu.Unlock()
+
+	if authKeys != nil {
+		authKeys.UpdateConfig(config)
+	}
+}
+
+func (b *Bridge) SetTailnetBootstrapStatusProvider(provider func() map[string]any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tailnetBootstrapStatusProvider = provider
+}
+
+func (b *Bridge) snapshotStatus() (RuntimeStatus, ExposureStatus, auth.State, *Info, func() map[string]any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	runtimeStatus := b.runtime
 	exposureStatus := b.exposure
 	authState := b.auth
+	statusProvider := b.tailnetBootstrapStatusProvider
 	var info *Info
 	if b.info != nil {
 		copy := *b.info
 		info = &copy
 	}
-	return runtimeStatus, exposureStatus, authState, info
+	return runtimeStatus, exposureStatus, authState, info, statusProvider
 }
 
 func buildConnectionTarget(exposureStatus ExposureStatus, info *Info) map[string]any {
 	gatewayEndpoint := ""
 	if info != nil {
-		gatewayEndpoint = info.BridgeWebSocketURL
+		gatewayEndpoint = sanitizeAdvertisedWebSocketURL(info.BridgeWebSocketURL)
 	}
 
 	recommendedEndpoint := gatewayEndpoint
 	source := "gateway"
-	if exposureStatus.Ready && exposureStatus.Session != nil && strings.TrimSpace(exposureStatus.Session.ReachableWS) != "" {
-		recommendedEndpoint = exposureStatus.Session.ReachableWS
+	exposureEndpoint := ""
+	exposureHTTPURL := ""
+	if exposureStatus.Session != nil {
+		exposureEndpoint = sanitizeAdvertisedWebSocketURL(exposureStatus.Session.ReachableWS)
+		exposureHTTPURL = sanitizeAdvertisedHTTPURL(exposureStatus.Session.ReachableHTTP)
+	}
+	if exposureStatus.Ready && exposureEndpoint != "" {
+		recommendedEndpoint = exposureEndpoint
 		source = exposureStatus.Mode
+	} else if recommendedEndpoint == "" {
+		source = "unavailable"
 	}
 
 	payload := map[string]any{
@@ -317,11 +369,56 @@ func buildConnectionTarget(exposureStatus ExposureStatus, info *Info) map[string
 		"source":                    source,
 		"gatewayServerEndpoint":     gatewayEndpoint,
 	}
-	if exposureStatus.Session != nil {
-		payload["exposureServerEndpoint"] = exposureStatus.Session.ReachableWS
-		payload["exposureHttpUrl"] = exposureStatus.Session.ReachableHTTP
+	if exposureEndpoint != "" {
+		payload["exposureServerEndpoint"] = exposureEndpoint
+	}
+	if exposureHTTPURL != "" {
+		payload["exposureHttpUrl"] = exposureHTTPURL
 	}
 	return payload
+}
+
+func sanitizeAdvertisedWebSocketURL(rawURL string) string {
+	parsed, ok := parseAdvertisedURL(rawURL)
+	if !ok {
+		return ""
+	}
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+		return ""
+	}
+	return parsed.String()
+}
+
+func sanitizeAdvertisedHTTPURL(rawURL string) string {
+	parsed, ok := parseAdvertisedURL(rawURL)
+	if !ok {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.String()
+}
+
+func parseAdvertisedURL(rawURL string) (*url.URL, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return nil, false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" || isWildcardAdvertiseHost(host) {
+		return nil, false
+	}
+	return parsed, true
+}
+
+func isWildcardAdvertiseHost(host string) bool {
+	switch strings.TrimSpace(strings.ToLower(host)) {
+	case "0.0.0.0", "::", "[::]":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *Bridge) handleAuthHTTP(w http.ResponseWriter, r *http.Request) bool {
@@ -411,7 +508,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/", "/status":
 		readiness := b.getUpstreamReadiness(r.Context(), false)
-		runtimeStatus, exposureStatus, authState, info := b.snapshotStatus()
+		runtimeStatus, exposureStatus, authState, info, tailnetBootstrapStatusProvider := b.snapshotStatus()
 		gatewayStatus := map[string]any{
 			"host":          b.config.Host,
 			"port":          b.config.Port,
@@ -423,7 +520,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 			gatewayStatus["webSocketUrl"] = info.BridgeWebSocketURL
 			gatewayStatus["readyUrl"] = info.BridgeReadyURL
 		}
-		sendJSON(w, http.StatusOK, map[string]any{
+		payload := map[string]any{
 			"ok":      true,
 			"runtime": runtimeStatus,
 			"gateway": gatewayStatus,
@@ -442,10 +539,14 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 			},
 			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
 			"ui":            b.uiStatus(),
-		})
+		}
+		if tailnetBootstrapStatusProvider != nil {
+			payload["tailnetBootstrap"] = tailnetBootstrapStatusProvider()
+		}
+		sendJSON(w, http.StatusOK, payload)
 		return
 	case "/codex-mobile/connect":
-		_, exposureStatus, authState, info := b.snapshotStatus()
+		_, exposureStatus, authState, info, _ := b.snapshotStatus()
 		sendJSON(w, http.StatusOK, map[string]any{
 			"ok":            true,
 			"connection":    buildConnectionTarget(exposureStatus, info),
@@ -474,7 +575,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 		if readiness.OK {
 			status = http.StatusOK
 		}
-		runtimeStatus, exposureStatus, authState, info := b.snapshotStatus()
+		runtimeStatus, exposureStatus, authState, info, tailnetBootstrapStatusProvider := b.snapshotStatus()
 		gatewayStatus := map[string]any{
 			"host":     b.config.Host,
 			"port":     b.config.Port,
@@ -485,7 +586,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 			gatewayStatus["webSocketUrl"] = info.BridgeWebSocketURL
 			gatewayStatus["readyUrl"] = info.BridgeReadyURL
 		}
-		sendJSON(w, status, map[string]any{
+		payload := map[string]any{
 			"ok":      readiness.OK,
 			"runtime": runtimeStatus,
 			"gateway": gatewayStatus,
@@ -498,7 +599,11 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 			},
 			"exposure": exposureStatus,
 			"auth":     authState,
-		})
+		}
+		if tailnetBootstrapStatusProvider != nil {
+			payload["tailnetBootstrap"] = tailnetBootstrapStatusProvider()
+		}
+		sendJSON(w, status, payload)
 		return
 	}
 
@@ -511,7 +616,7 @@ func (b *Bridge) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, authState, _ := b.snapshotStatus()
+	_, _, authState, _, _ := b.snapshotStatus()
 
 	b.mu.Lock()
 	authorizer := b.authorizer
@@ -568,8 +673,9 @@ func (b *Bridge) handleDirectRPC(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Invalid JSON body."})
 		return
 	}
-	if _, ok := DirectRPCMethods[payload.Method]; !ok {
-		sendJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Unsupported direct RPC method."})
+	payload.Method = strings.TrimSpace(payload.Method)
+	if payload.Method == "" {
+		sendJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Direct RPC method is required."})
 		return
 	}
 
@@ -602,6 +708,24 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 			return map[string]any{"value": nil}
 		}
 		return map[string]any{"value": state[key]}
+	case "get-global-state-snapshot":
+		state, err := b.loadGlobalState()
+		if err != nil {
+			b.logger.Printf("%s [codex-bridge] failed to load global state snapshot: %v", nowISO(), err)
+			return map[string]any{
+				"state":                map[string]any{},
+				"workspaceRootOptions": map[string]any{"roots": []string{}, "activeRoots": []string{}, "labels": map[string]any{}},
+			}
+		}
+		roots, activeRoots, labels := b.workspaceRootOptions()
+		return map[string]any{
+			"state": state,
+			"workspaceRootOptions": map[string]any{
+				"roots":       roots,
+				"activeRoots": activeRoots,
+				"labels":      labels,
+			},
+		}
 	case "set-global-state":
 		key, _ := stringParam(params, "key")
 		if key == "" {
@@ -683,6 +807,8 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 		return map[string]any{"available": false}
 	case "account-info":
 		return map[string]any{"plan": nil, "accountId": nil}
+	case "app/list":
+		return map[string]any{"data": []any{}, "nextCursor": nil}
 	case "list-pending-automation-run-threads":
 		return map[string]any{"threadIds": []string{}}
 	case "inbox-items":
@@ -714,6 +840,8 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 		return map[string]any{"supported": false, "configuredHotkey": nil, "state": nil}
 	case "fast-mode-rollout-metrics":
 		return map[string]any{"enabled": true, "estimatedSavedMs": 0, "rolloutCountWithCompletedTurns": 0}
+	case "experimentalFeature/list":
+		return map[string]any{"data": []any{}, "nextCursor": nil}
 	case "os-info":
 		return map[string]any{
 			"platform":  runtime.GOOS,

@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,6 +22,8 @@ import (
 const (
 	ModeManaged = "managed"
 	ModeRemote  = "remote"
+
+	macOSBundledCodexPath = "/Applications/Codex.app/Contents/Resources/codex"
 )
 
 type Command struct {
@@ -50,6 +54,7 @@ type Manager struct {
 	logger        *log.Logger
 	mu            sync.Mutex
 	cancel        context.CancelFunc
+	authWatchStop context.CancelFunc
 	appServerCmd  *exec.Cmd
 	appServerDone chan error
 	info          *Info
@@ -132,10 +137,15 @@ func (m *Manager) Stop(ctx context.Context) error {
 		m.restartTimer = nil
 	}
 	cancel := m.cancel
+	authWatchStop := m.authWatchStop
+	m.authWatchStop = nil
 	info := m.info
 	m.info = nil
 	m.mu.Unlock()
 
+	if authWatchStop != nil {
+		authWatchStop()
+	}
 	if cancel != nil {
 		cancel()
 	}
@@ -150,6 +160,7 @@ func (m *Manager) startManagedAppServer(ctx context.Context, upstreamURL string)
 	if command.Path == "" {
 		command.Path = "codex"
 	}
+	command.Path = resolvePreferredAppServerBinary(command.Path)
 	args := append([]string{}, command.Args...)
 	if len(args) == 0 || args[0] != "app-server" {
 		args = append([]string{"app-server"}, args...)
@@ -188,7 +199,96 @@ func (m *Manager) startManagedAppServer(ctx context.Context, upstreamURL string)
 	if err := waitForWebSocketReady(ctx, upstreamURL, 15*time.Second); err != nil {
 		return fmt.Errorf("app-server exited before becoming ready: %w", err)
 	}
+	m.startAuthStateWatcher(ctx)
 	return nil
+}
+
+type codexAuthFile struct {
+	AuthMode string `json:"auth_mode"`
+	Tokens   struct {
+		AccountID    string `json:"account_id"`
+		RefreshToken string `json:"refresh_token"`
+	} `json:"tokens"`
+}
+
+func (m *Manager) startAuthStateWatcher(ctx context.Context) {
+	authPath := filepath.Join(strings.TrimSpace(m.config.CodexHome), "auth.json")
+	if strings.TrimSpace(m.config.CodexHome) == "" {
+		return
+	}
+
+	initialFingerprint, ok := readAuthStateFingerprint(authPath)
+	if !ok {
+		initialFingerprint = ""
+	}
+
+	watchCtx, cancel := context.WithCancel(ctx)
+
+	m.mu.Lock()
+	if m.authWatchStop != nil {
+		m.authWatchStop()
+	}
+	m.authWatchStop = cancel
+	m.mu.Unlock()
+
+	go m.watchAuthState(watchCtx, authPath, initialFingerprint)
+}
+
+func (m *Manager) watchAuthState(ctx context.Context, authPath, lastFingerprint string) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			currentFingerprint, ok := readAuthStateFingerprint(authPath)
+			if !ok {
+				continue
+			}
+			if currentFingerprint == lastFingerprint {
+				continue
+			}
+
+			lastFingerprint = currentFingerprint
+			m.logger.Printf("%s [codex-bridge-runtime] detected CODEX_HOME auth state change; restarting managed app-server", nowISO())
+			m.scheduleRestart()
+			return
+		}
+	}
+}
+
+func readAuthStateFingerprint(path string) (string, bool) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+
+	var authState codexAuthFile
+	if err := json.Unmarshal(body, &authState); err != nil {
+		return "", false
+	}
+
+	return strings.Join([]string{
+		strings.TrimSpace(authState.AuthMode),
+		strings.TrimSpace(authState.Tokens.AccountID),
+		strings.TrimSpace(authState.Tokens.RefreshToken),
+	}, "|"), true
+}
+
+func resolvePreferredAppServerBinary(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed != "" && trimmed != "codex" {
+		return trimmed
+	}
+	if info, err := os.Stat(macOSBundledCodexPath); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+		return macOSBundledCodexPath
+	}
+	if trimmed == "" {
+		return "codex"
+	}
+	return trimmed
 }
 
 func (m *Manager) waitForAppServerExit(cmd *exec.Cmd) {

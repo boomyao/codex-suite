@@ -1,1 +1,0 @@
-import{t as e}from"./html-derivative-BRDTuPoI.js";export{e as default};

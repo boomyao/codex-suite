@@ -2,7 +2,13 @@ module github.com/boomyao/codex-bridge
 
 go 1.26.1
 
-require github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+require (
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	golang.org/x/oauth2 v0.36.0
+	golang.org/x/term v0.41.0
+	tailscale.com v1.96.4
+)
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
@@ -25,7 +31,6 @@ require (
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
-	tailscale.com v1.96.4 // indirect
 )
