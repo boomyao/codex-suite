@@ -1,4 +1,5 @@
 .DS_Store
 *.log
-tmp-go-config.json
-codex-bridge
+/dist/
+/tmp-go-config.json
+/codex-bridge
