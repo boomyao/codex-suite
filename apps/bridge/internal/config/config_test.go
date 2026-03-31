@@ -7,14 +7,17 @@ import (
 	"testing"
 )
 
-func TestLoadConfigRoundTripsMobileAPIAccessToken(t *testing.T) {
+func TestLoadConfigRoundTripsMobileOAuthEnrollmentConfig(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config.json")
 
 	cfg := DefaultConfig()
-	cfg.Exposure.Tailnet.MobileAPIAccessToken = "tskey-api-test"
+	cfg.Exposure.Tailnet.MobileOAuthClientID = "oauth-client-id"
+	cfg.Exposure.Tailnet.MobileOAuthClientSecret = "oauth-client-secret"
+	cfg.Exposure.Tailnet.MobileOAuthTailnet = "example.ts.net"
+	cfg.Exposure.Tailnet.MobileOAuthTags = []string{"tag:codex-mobile"}
 
 	if err := SaveConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
@@ -24,8 +27,18 @@ func TestLoadConfigRoundTripsMobileAPIAccessToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Exposure.Tailnet.MobileAPIAccessToken != cfg.Exposure.Tailnet.MobileAPIAccessToken {
-		t.Fatalf("unexpected mobile API access token %q", loaded.Exposure.Tailnet.MobileAPIAccessToken)
+	if loaded.Exposure.Tailnet.MobileOAuthClientID != cfg.Exposure.Tailnet.MobileOAuthClientID {
+		t.Fatalf("unexpected mobile OAuth client ID %q", loaded.Exposure.Tailnet.MobileOAuthClientID)
+	}
+	if loaded.Exposure.Tailnet.MobileOAuthClientSecret != cfg.Exposure.Tailnet.MobileOAuthClientSecret {
+		t.Fatalf("unexpected mobile OAuth client secret %q", loaded.Exposure.Tailnet.MobileOAuthClientSecret)
+	}
+	if loaded.Exposure.Tailnet.MobileOAuthTailnet != cfg.Exposure.Tailnet.MobileOAuthTailnet {
+		t.Fatalf("unexpected mobile OAuth tailnet %q", loaded.Exposure.Tailnet.MobileOAuthTailnet)
+	}
+	if len(loaded.Exposure.Tailnet.MobileOAuthTags) != len(cfg.Exposure.Tailnet.MobileOAuthTags) ||
+		loaded.Exposure.Tailnet.MobileOAuthTags[0] != cfg.Exposure.Tailnet.MobileOAuthTags[0] {
+		t.Fatalf("unexpected mobile OAuth tags %v", loaded.Exposure.Tailnet.MobileOAuthTags)
 	}
 }
 

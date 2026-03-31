@@ -1,18 +1,24 @@
 package com.boomyao.codexmobile.nativehost
 
 import android.content.Context
+import com.boomyao.codexmobile.tailnet.TailnetCredentialStore
+import com.boomyao.codexmobile.tailnet.restoreTailnetEnrollmentPayload
+import com.boomyao.codexmobile.tailnet.sanitizeTailnetEnrollmentPayloadForStorage
+import com.boomyao.codexmobile.tailnet.tailnetEnrollmentContainsInlineSecrets
+import com.boomyao.codexmobile.tailnet.tailnetCredentialLookupKeyForPayload
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.abs
 
 class BridgeProfileStore(context: Context) {
+    private val credentialStore = TailnetCredentialStore(context)
     private val preferences =
         context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     fun list(): List<BridgeProfile> {
         val rawProfiles = preferences.getString(KEY_PROFILES_JSON, null)?.trim().orEmpty()
         if (rawProfiles.isNotEmpty()) {
-            return parseProfiles(rawProfiles)
+            return persistSanitizedProfilesIfNeeded(parseProfiles(rawProfiles))
         }
         return migrateLegacyProfile()?.let(::listOf).orEmpty()
     }
@@ -29,6 +35,7 @@ class BridgeProfileStore(context: Context) {
     fun write(profile: BridgeProfile) {
         val now = System.currentTimeMillis()
         val profileToSave = profile.copy(lastUsedAtMillis = profile.lastUsedAtMillis ?: now)
+        profileToSave.tailnetEnrollmentPayload?.let(credentialStore::save)
         val profiles = list().toMutableList()
         profiles.removeAll { it.id == profileToSave.id }
         profiles.add(0, profileToSave)
@@ -44,7 +51,9 @@ class BridgeProfileStore(context: Context) {
     }
 
     fun remove(profileId: String): BridgeProfile? {
-        val remainingProfiles = list().filterNot { it.id == profileId }
+        val currentProfiles = list()
+        val removedProfile = currentProfiles.firstOrNull { it.id == profileId }
+        val remainingProfiles = currentProfiles.filterNot { it.id == profileId }
         val currentActiveId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)?.trim().orEmpty()
         val nextActiveId =
             when {
@@ -54,42 +63,100 @@ class BridgeProfileStore(context: Context) {
                 else -> remainingProfiles.first().id
             }
         persistProfiles(remainingProfiles, nextActiveId)
+        removedProfile?.tailnetEnrollmentPayload?.let { removedPayload ->
+            val removedKey = tailnetCredentialLookupKeyForPayload(removedPayload)
+            val stillReferenced =
+                removedKey != null &&
+                    remainingProfiles.any { profile ->
+                        tailnetCredentialLookupKeyForPayload(profile.tailnetEnrollmentPayload.orEmpty()) == removedKey
+                    }
+            if (!stillReferenced) {
+                credentialStore.remove(removedPayload)
+            }
+        }
         return remainingProfiles.firstOrNull { it.id == nextActiveId }
     }
 
     fun clear() {
         preferences.edit().clear().apply()
+        credentialStore.clear()
     }
 
-    fun createProfileId(name: String, endpoint: String): String {
-        val seed = "${name.trim()}|${endpoint.trim()}|${System.currentTimeMillis()}"
+    fun createProfileId(name: String, endpoint: String, bridgeId: String? = null): String {
+        val seed = "${bridgeId?.trim().orEmpty()}|${name.trim()}|${endpoint.trim()}|${System.currentTimeMillis()}"
         return "bridge_${System.currentTimeMillis()}_${abs(seed.hashCode())}"
     }
 
-    private fun parseProfiles(rawProfiles: String): List<BridgeProfile> {
+    private data class ParsedProfiles(
+        val profiles: List<BridgeProfile>,
+        val mutated: Boolean,
+    )
+
+    private fun parseProfiles(rawProfiles: String): ParsedProfiles {
         return runCatching {
             val root = JSONArray(rawProfiles)
+            var mutated = false
             buildList {
                 for (index in 0 until root.length()) {
                     val item = root.optJSONObject(index) ?: continue
                     val id = item.optString("id").trim()
                     val endpoint = item.optString("serverEndpoint").trim()
                     if (id.isEmpty() || endpoint.isEmpty()) {
+                        mutated = true
                         continue
                     }
+                    val storedTailnetEnrollmentPayload =
+                        item.optString("tailnetEnrollmentPayload").trim().ifEmpty { null }
+                    val hydratedTailnetEnrollmentPayload =
+                        storedTailnetEnrollmentPayload?.let { stored ->
+                            when {
+                                tailnetEnrollmentContainsInlineSecrets(stored) -> {
+                                    credentialStore.remove(stored)
+                                    mutated = true
+                                    null
+                                }
+                                else -> {
+                                    val secrets = credentialStore.read(stored)
+                                    if (secrets == null) {
+                                        mutated = true
+                                        null
+                                    } else {
+                                        restoreTailnetEnrollmentPayload(
+                                            rawPayload = stored,
+                                            secrets = secrets,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     add(
                         BridgeProfile(
                             id = id,
+                            bridgeId = item.optString("bridgeId").trim().ifEmpty { null },
                             name = item.optString("name").trim().ifEmpty { endpoint },
                             serverEndpoint = endpoint,
                             authToken = item.optString("authToken").trim().ifEmpty { null },
-                            tailnetEnrollmentPayload = item.optString("tailnetEnrollmentPayload").trim().ifEmpty { null },
+                            tailnetEnrollmentPayload = hydratedTailnetEnrollmentPayload,
                             lastUsedAtMillis = item.optLong("lastUsedAtMillis").takeIf { it > 0L },
                         ),
                     )
                 }
+            }.let { profiles ->
+                ParsedProfiles(
+                    profiles = profiles,
+                    mutated = mutated,
+                )
             }
-        }.getOrDefault(emptyList())
+        }.getOrDefault(ParsedProfiles(emptyList(), mutated = true))
+    }
+
+    private fun persistSanitizedProfilesIfNeeded(parsed: ParsedProfiles): List<BridgeProfile> {
+        if (parsed.mutated) {
+            val activeProfileId = preferences.getString(KEY_ACTIVE_PROFILE_ID, null)?.trim().orEmpty()
+            val nextActiveId = parsed.profiles.firstOrNull { it.id == activeProfileId }?.id ?: parsed.profiles.firstOrNull()?.id
+            persistProfiles(parsed.profiles, nextActiveId)
+        }
+        return parsed.profiles
     }
 
     private fun persistProfiles(profiles: List<BridgeProfile>, activeProfileId: String?) {
@@ -99,10 +166,14 @@ class BridgeProfileStore(context: Context) {
                     put(
                         JSONObject()
                             .put("id", profile.id)
+                            .put("bridgeId", profile.bridgeId)
                             .put("name", profile.name)
                             .put("serverEndpoint", profile.serverEndpoint)
                             .put("authToken", profile.authToken)
-                            .put("tailnetEnrollmentPayload", profile.tailnetEnrollmentPayload)
+                            .put(
+                                "tailnetEnrollmentPayload",
+                                profile.tailnetEnrollmentPayload?.let(::sanitizeTailnetEnrollmentPayloadForStorage),
+                            )
                             .put("lastUsedAtMillis", profile.lastUsedAtMillis)
                     )
                 }
@@ -126,6 +197,7 @@ class BridgeProfileStore(context: Context) {
         val profile =
             BridgeProfile(
                 id = createProfileId(name, endpoint),
+                bridgeId = null,
                 name = name,
                 serverEndpoint = endpoint,
                 authToken = authToken,
@@ -133,6 +205,10 @@ class BridgeProfileStore(context: Context) {
             )
         persistProfiles(listOf(profile), profile.id)
         return profile
+    }
+
+    fun forgetTailnetCredentials(rawPayload: String) {
+        credentialStore.remove(rawPayload)
     }
 
     companion object {

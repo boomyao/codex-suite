@@ -31,6 +31,8 @@ class NativeHostConnectionSheetController(
     private val openScanner: () -> Unit,
     private val resetEnrollment: (BridgeProfile) -> Unit,
 ) {
+    private var activeDialog: BottomSheetDialog? = null
+
     private enum class ChipTone {
         ACTIVE,
         SUCCESS,
@@ -38,7 +40,9 @@ class NativeHostConnectionSheetController(
     }
 
     fun openConnectionSheet() {
+        activeDialog?.dismiss()
         val dialog = BottomSheetDialog(context)
+        activeDialog = dialog
         val sheetRoot = FrameLayout(context)
         val content =
             LayoutInflater.from(context).inflate(
@@ -68,13 +72,13 @@ class NativeHostConnectionSheetController(
                 profiles = savedProfiles,
                 activeProfileId = null,
             ) { nextProfile ->
-                dialog.dismiss()
+                dismissOpenSheet()
                 activateProfile(nextProfile)
             }
             savedConnectionsSection.visibility = if (savedProfiles.isEmpty()) View.GONE else View.VISIBLE
             primaryButton.text = context.getString(R.string.native_host_sheet_action_scan)
             primaryButton.setOnClickListener {
-                dialog.dismiss()
+                dismissOpenSheet()
                 openScanner()
             }
             secondaryButton.visibility = View.GONE
@@ -90,31 +94,41 @@ class NativeHostConnectionSheetController(
                 profiles = savedProfiles,
                 activeProfileId = profile.id,
             ) { nextProfile ->
-                dialog.dismiss()
+                dismissOpenSheet()
                 activateProfile(nextProfile)
             }
             savedConnectionsSection.visibility = if (savedProfiles.isEmpty()) View.GONE else View.VISIBLE
             primaryButton.text = context.getString(R.string.native_host_sheet_action_reload)
             primaryButton.setOnClickListener {
-                dialog.dismiss()
+                dismissOpenSheet()
                 reloadActiveBridge()
             }
             secondaryButton.visibility = View.VISIBLE
             secondaryButton.text = context.getString(R.string.native_host_sheet_action_rescan)
             secondaryButton.setOnClickListener {
-                dialog.dismiss()
+                dismissOpenSheet()
                 openScanner()
             }
             tertiaryButton.visibility = View.VISIBLE
             tertiaryButton.text = context.getString(R.string.native_host_sheet_action_reset)
             tertiaryButton.setOnClickListener {
-                dialog.dismiss()
+                dismissOpenSheet()
                 confirmReset(profile)
             }
         }
 
         dialog.setContentView(content)
+        dialog.setOnDismissListener {
+            if (activeDialog === dialog) {
+                activeDialog = null
+            }
+        }
         dialog.show()
+    }
+
+    fun dismissOpenSheet() {
+        activeDialog?.dismiss()
+        activeDialog = null
     }
 
     fun renderConnectionCards(
@@ -351,6 +365,11 @@ class NativeHostConnectionSheetController(
         return when {
             normalized.contains("tailnet runtime is not running", ignoreCase = true) ->
                 "The secure link on this phone has stopped."
+            normalized.contains("invalid key", ignoreCase = true) ||
+                normalized.contains("not valid", ignoreCase = true) ||
+                normalized.contains("fresh enrollment qr", ignoreCase = true) ||
+                normalized.contains("re-enrolled", ignoreCase = true) ->
+                context.getString(R.string.native_host_error_secure_link_expired)
             normalized.contains("expired", ignoreCase = true) ->
                 "This setup code expired before the workspace opened."
             normalized.isBlank() ->

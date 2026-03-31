@@ -99,6 +99,7 @@ type localDirectRPCState struct {
 }
 
 type Config struct {
+	BridgeID           string
 	Host               string
 	Port               int
 	UpstreamURL        string
@@ -114,16 +115,12 @@ type Config struct {
 }
 
 type MobileEnrollmentConfig struct {
-	ControlURL           string
-	AuthKey              string
-	APIAccessToken       string
-	Hostname             string
-	LoginMode            string
-	OAuthClientID        string
-	OAuthClientSecret    string
-	OAuthTailnet         string
-	OAuthTags            []string
-	AuthKeyExpirySeconds int
+	ControlURL        string
+	Hostname          string
+	OAuthClientID     string
+	OAuthClientSecret string
+	OAuthTailnet      string
+	OAuthTags         []string
 }
 
 type Info struct {
@@ -175,7 +172,6 @@ type Bridge struct {
 	exposure                       ExposureStatus
 	auth                           auth.State
 	authorizer                     auth.Authorizer
-	authKeys                       *mobileAuthKeyProvider
 	tailnetBootstrapStatusProvider func() map[string]any
 }
 
@@ -219,7 +215,6 @@ func New(config Config, logger *log.Logger) *Bridge {
 			Mode: "none",
 		},
 		authorizer: auth.NewNoopAuthorizer(),
-		authKeys:   newMobileAuthKeyProvider(config.MobileEnrollment, logger),
 	}
 }
 
@@ -312,13 +307,8 @@ func (b *Bridge) SetAuthorizer(authorizer auth.Authorizer) {
 
 func (b *Bridge) SetMobileEnrollmentConfig(config MobileEnrollmentConfig) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.config.MobileEnrollment = config
-	authKeys := b.authKeys
-	b.mu.Unlock()
-
-	if authKeys != nil {
-		authKeys.UpdateConfig(config)
-	}
 }
 
 func (b *Bridge) SetTailnetBootstrapStatusProvider(provider func() map[string]any) {
@@ -343,7 +333,7 @@ func (b *Bridge) snapshotStatus() (RuntimeStatus, ExposureStatus, auth.State, *I
 	return runtimeStatus, exposureStatus, authState, info, statusProvider
 }
 
-func buildConnectionTarget(exposureStatus ExposureStatus, info *Info) map[string]any {
+func buildConnectionTarget(bridgeID string, exposureStatus ExposureStatus, info *Info) map[string]any {
 	gatewayEndpoint := ""
 	if info != nil {
 		gatewayEndpoint = sanitizeAdvertisedWebSocketURL(info.BridgeWebSocketURL)
@@ -368,6 +358,9 @@ func buildConnectionTarget(exposureStatus ExposureStatus, info *Info) map[string
 		"recommendedServerEndpoint": recommendedEndpoint,
 		"source":                    source,
 		"gatewayServerEndpoint":     gatewayEndpoint,
+	}
+	if trimmedBridgeID := strings.TrimSpace(bridgeID); trimmedBridgeID != "" {
+		payload["bridgeId"] = trimmedBridgeID
 	}
 	if exposureEndpoint != "" {
 		payload["exposureServerEndpoint"] = exposureEndpoint
@@ -493,7 +486,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if b.handleMobilePreload(w, r) {
 		return
 	}
-	if b.handleLocalAuthPage(w, r) {
+	if b.handleLocalMobileEnrollment(w, r) {
 		return
 	}
 	if b.handleUIAsset(w, r) {
@@ -512,6 +505,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 		gatewayStatus := map[string]any{
 			"host":          b.config.Host,
 			"port":          b.config.Port,
+			"bridgeId":      strings.TrimSpace(b.config.BridgeID),
 			"uptimeMs":      time.Since(b.healthState.startedAt).Milliseconds(),
 			"websocketPath": "/",
 		}
@@ -537,8 +531,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 				"health": b.config.HealthPath,
 				"ready":  b.config.ReadyPath,
 			},
-			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
-			"ui":            b.uiStatus(),
+			"ui": b.uiStatus(),
 		}
 		if tailnetBootstrapStatusProvider != nil {
 			payload["tailnetBootstrap"] = tailnetBootstrapStatusProvider()
@@ -548,11 +541,10 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	case "/codex-mobile/connect":
 		_, exposureStatus, authState, info, _ := b.snapshotStatus()
 		sendJSON(w, http.StatusOK, map[string]any{
-			"ok":            true,
-			"connection":    buildConnectionTarget(exposureStatus, info),
-			"auth":          authState,
-			"exposure":      exposureStatus,
-			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
+			"ok":         true,
+			"connection": buildConnectionTarget(b.config.BridgeID, exposureStatus, info),
+			"auth":       authState,
+			"exposure":   exposureStatus,
 		})
 		return
 	}
@@ -579,6 +571,7 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 		gatewayStatus := map[string]any{
 			"host":     b.config.Host,
 			"port":     b.config.Port,
+			"bridgeId": strings.TrimSpace(b.config.BridgeID),
 			"uptimeMs": time.Since(b.healthState.startedAt).Milliseconds(),
 		}
 		if info != nil {
@@ -636,26 +629,24 @@ func (b *Bridge) handleAuthSession(w http.ResponseWriter, r *http.Request) {
 			statusCode = http.StatusUnauthorized
 		}
 		sendJSON(w, statusCode, map[string]any{
-			"ok":            false,
-			"authorized":    session.Authorized,
-			"reason":        emptyToNil(session.Reason),
-			"deviceId":      emptyToNil(session.DeviceID),
-			"deviceName":    emptyToNil(session.DeviceName),
-			"auth":          authState,
-			"localAuthPage": emptyToNil(localAuthPageURL(authState)),
-			"error":         errorMessage,
+			"ok":         false,
+			"authorized": session.Authorized,
+			"reason":     emptyToNil(session.Reason),
+			"deviceId":   emptyToNil(session.DeviceID),
+			"deviceName": emptyToNil(session.DeviceName),
+			"auth":       authState,
+			"error":      errorMessage,
 		})
 		return
 	}
 
 	sendJSON(w, http.StatusOK, map[string]any{
-		"ok":            true,
-		"authorized":    session.Authorized,
-		"reason":        emptyToNil(session.Reason),
-		"deviceId":      emptyToNil(session.DeviceID),
-		"deviceName":    emptyToNil(session.DeviceName),
-		"auth":          authState,
-		"localAuthPage": emptyToNil(localAuthPageURL(authState)),
+		"ok":         true,
+		"authorized": session.Authorized,
+		"reason":     emptyToNil(session.Reason),
+		"deviceId":   emptyToNil(session.DeviceID),
+		"deviceName": emptyToNil(session.DeviceName),
+		"auth":       authState,
 	})
 }
 

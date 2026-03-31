@@ -3,11 +3,13 @@ package com.boomyao.codexmobile.tailnet
 import android.content.Context
 
 class EnrollmentStore(context: Context) {
+    private val credentialStore = TailnetCredentialStore(context)
     private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     fun saveEnrollment(payload: TailnetEnrollmentPayload) {
+        credentialStore.save(payload)
         preferences.edit()
-            .putString(KEY_RAW_ENROLLMENT, payload.rawPayload)
+            .putString(KEY_RAW_ENROLLMENT, sanitizeTailnetEnrollmentPayloadForStorage(payload.rawPayload))
             .apply()
     }
 
@@ -46,15 +48,30 @@ class EnrollmentStore(context: Context) {
     }
 
     fun readEnrollment(): TailnetEnrollmentPayload? {
-        val rawPayload = preferences.getString(KEY_RAW_ENROLLMENT, null)?.trim().orEmpty()
-        if (rawPayload.isEmpty()) {
+        val storedPayload = preferences.getString(KEY_RAW_ENROLLMENT, null)?.trim().orEmpty()
+        if (storedPayload.isEmpty()) {
             return null
         }
-        return runCatching { parseTailnetEnrollmentPayload(rawPayload) }.getOrNull()
+        if (tailnetEnrollmentContainsInlineSecrets(storedPayload)) {
+            clear()
+            return null
+        }
+        val secrets = credentialStore.read(storedPayload)
+        if (secrets == null) {
+            clear()
+            return null
+        }
+        val hydratedPayload =
+            restoreTailnetEnrollmentPayload(
+                rawPayload = storedPayload,
+                secrets = secrets,
+            )
+        return runCatching { parseTailnetEnrollmentPayload(hydratedPayload) }.getOrNull()
     }
 
     fun clear() {
         preferences.edit().clear().apply()
+        credentialStore.clear()
     }
 
     companion object {

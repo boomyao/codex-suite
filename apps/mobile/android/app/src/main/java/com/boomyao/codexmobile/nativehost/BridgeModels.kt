@@ -4,6 +4,7 @@ import org.json.JSONObject
 
 data class BridgeProfile(
     val id: String,
+    val bridgeId: String?,
     val name: String,
     val serverEndpoint: String,
     val authToken: String?,
@@ -12,6 +13,7 @@ data class BridgeProfile(
 )
 
 data class ConnectionTargetResponse(
+    val bridgeId: String?,
     val recommendedServerEndpoint: String,
     val authMode: String,
     val localAuthPage: String?,
@@ -44,6 +46,7 @@ data class BridgeBootstrapState(
 
 sealed class EnrollmentPayload {
     data class Bridge(
+        val bridgeId: String?,
         val name: String,
         val serverEndpoint: String,
         val pairingCode: String?,
@@ -51,6 +54,7 @@ sealed class EnrollmentPayload {
     ) : EnrollmentPayload()
 
     data class Tailnet(
+        val bridgeId: String?,
         val bridgeName: String,
         val bridgeServerEndpoint: String,
         val pairingCode: String?,

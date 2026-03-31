@@ -64,19 +64,15 @@ type TunnelConfig struct {
 }
 
 type TailnetConfig struct {
-	Socket                     string   `json:"socket"`
-	Hostname                   string   `json:"hostname"`
-	AddressStrategy            string   `json:"addressStrategy"`
-	MobileControlURL           string   `json:"mobileControlUrl"`
-	MobileAuthKey              string   `json:"mobileAuthKey"`
-	MobileAPIAccessToken       string   `json:"mobileApiAccessToken"`
-	MobileHostname             string   `json:"mobileHostname"`
-	MobileLoginMode            string   `json:"mobileLoginMode"`
-	MobileOAuthClientID        string   `json:"mobileOAuthClientId"`
-	MobileOAuthClientSecret    string   `json:"mobileOAuthClientSecret"`
-	MobileOAuthTailnet         string   `json:"mobileOAuthTailnet"`
-	MobileOAuthTags            []string `json:"mobileOAuthTags"`
-	MobileAuthKeyExpirySeconds int      `json:"mobileAuthKeyExpirySeconds"`
+	Socket                  string   `json:"socket"`
+	Hostname                string   `json:"hostname"`
+	AddressStrategy         string   `json:"addressStrategy"`
+	MobileControlURL        string   `json:"mobileControlUrl"`
+	MobileHostname          string   `json:"mobileHostname"`
+	MobileOAuthClientID     string   `json:"mobileOAuthClientId"`
+	MobileOAuthClientSecret string   `json:"mobileOAuthClientSecret"`
+	MobileOAuthTailnet      string   `json:"mobileOAuthTailnet"`
+	MobileOAuthTags         []string `json:"mobileOAuthTags"`
 }
 
 type AuthConfig struct {
@@ -130,19 +126,15 @@ func DefaultConfig() Config {
 				RestartDelayMS: 2000,
 			},
 			Tailnet: TailnetConfig{
-				Socket:                     "",
-				Hostname:                   "",
-				AddressStrategy:            "auto",
-				MobileControlURL:           "",
-				MobileAuthKey:              "",
-				MobileAPIAccessToken:       "",
-				MobileHostname:             "",
-				MobileLoginMode:            "",
-				MobileOAuthClientID:        "",
-				MobileOAuthClientSecret:    "",
-				MobileOAuthTailnet:         "",
-				MobileOAuthTags:            []string{},
-				MobileAuthKeyExpirySeconds: 600,
+				Socket:                  "",
+				Hostname:                "",
+				AddressStrategy:         "auto",
+				MobileControlURL:        "",
+				MobileHostname:          "",
+				MobileOAuthClientID:     "",
+				MobileOAuthClientSecret: "",
+				MobileOAuthTailnet:      "",
+				MobileOAuthTags:         []string{},
 			},
 		},
 		Auth: AuthConfig{
@@ -248,17 +240,8 @@ func EnvConfig() map[string]any {
 	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_CONTROL_URL"); value != "" {
 		tailnetCfg["mobileControlUrl"] = value
 	}
-	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_AUTH_KEY"); value != "" {
-		tailnetCfg["mobileAuthKey"] = value
-	}
-	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN"); value != "" {
-		tailnetCfg["mobileApiAccessToken"] = value
-	}
 	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_HOSTNAME"); value != "" {
 		tailnetCfg["mobileHostname"] = value
-	}
-	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_LOGIN_MODE"); value != "" {
-		tailnetCfg["mobileLoginMode"] = value
 	}
 	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_CLIENT_ID"); value != "" {
 		tailnetCfg["mobileOAuthClientId"] = value
@@ -271,9 +254,6 @@ func EnvConfig() map[string]any {
 	}
 	if value := envString("CODEX_EXPOSURE_TAILNET_MOBILE_OAUTH_TAGS"); value != "" {
 		tailnetCfg["mobileOAuthTags"] = normalizeCSVStringArray(value)
-	}
-	if value := envInt("CODEX_EXPOSURE_TAILNET_MOBILE_AUTH_KEY_EXPIRY_SECONDS"); value != nil {
-		tailnetCfg["mobileAuthKeyExpirySeconds"] = *value
 	}
 	if len(tailnetCfg) > 0 {
 		exposureCfg["tailnet"] = tailnetCfg
@@ -357,19 +337,15 @@ func ConfigToMap(cfg Config) map[string]any {
 				"restartDelayMs": cfg.Exposure.Tunnel.RestartDelayMS,
 			},
 			"tailnet": map[string]any{
-				"socket":                     cfg.Exposure.Tailnet.Socket,
-				"hostname":                   cfg.Exposure.Tailnet.Hostname,
-				"addressStrategy":            cfg.Exposure.Tailnet.AddressStrategy,
-				"mobileControlUrl":           cfg.Exposure.Tailnet.MobileControlURL,
-				"mobileAuthKey":              cfg.Exposure.Tailnet.MobileAuthKey,
-				"mobileApiAccessToken":       cfg.Exposure.Tailnet.MobileAPIAccessToken,
-				"mobileHostname":             cfg.Exposure.Tailnet.MobileHostname,
-				"mobileLoginMode":            cfg.Exposure.Tailnet.MobileLoginMode,
-				"mobileOAuthClientId":        cfg.Exposure.Tailnet.MobileOAuthClientID,
-				"mobileOAuthClientSecret":    cfg.Exposure.Tailnet.MobileOAuthClientSecret,
-				"mobileOAuthTailnet":         cfg.Exposure.Tailnet.MobileOAuthTailnet,
-				"mobileOAuthTags":            append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
-				"mobileAuthKeyExpirySeconds": cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds,
+				"socket":                  cfg.Exposure.Tailnet.Socket,
+				"hostname":                cfg.Exposure.Tailnet.Hostname,
+				"addressStrategy":         cfg.Exposure.Tailnet.AddressStrategy,
+				"mobileControlUrl":        cfg.Exposure.Tailnet.MobileControlURL,
+				"mobileHostname":          cfg.Exposure.Tailnet.MobileHostname,
+				"mobileOAuthClientId":     cfg.Exposure.Tailnet.MobileOAuthClientID,
+				"mobileOAuthClientSecret": cfg.Exposure.Tailnet.MobileOAuthClientSecret,
+				"mobileOAuthTailnet":      cfg.Exposure.Tailnet.MobileOAuthTailnet,
+				"mobileOAuthTags":         append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
 			},
 		},
 		"auth": map[string]any{
@@ -470,17 +446,8 @@ func NormalizeConfig(input map[string]any) (Config, error) {
 	if value, ok := stringValue(tailnetCfg, "mobileControlUrl"); ok {
 		cfg.Exposure.Tailnet.MobileControlURL = value
 	}
-	if value, ok := stringValue(tailnetCfg, "mobileAuthKey"); ok {
-		cfg.Exposure.Tailnet.MobileAuthKey = value
-	}
-	if value, ok := stringValue(tailnetCfg, "mobileApiAccessToken"); ok {
-		cfg.Exposure.Tailnet.MobileAPIAccessToken = value
-	}
 	if value, ok := stringValue(tailnetCfg, "mobileHostname"); ok {
 		cfg.Exposure.Tailnet.MobileHostname = value
-	}
-	if value, ok := stringValue(tailnetCfg, "mobileLoginMode"); ok {
-		cfg.Exposure.Tailnet.MobileLoginMode = value
 	}
 	if value, ok := stringValue(tailnetCfg, "mobileOAuthClientId"); ok {
 		cfg.Exposure.Tailnet.MobileOAuthClientID = value
@@ -493,9 +460,6 @@ func NormalizeConfig(input map[string]any) (Config, error) {
 	}
 	if value, exists := tailnetCfg["mobileOAuthTags"]; exists {
 		cfg.Exposure.Tailnet.MobileOAuthTags = normalizeCSVStringArray(value)
-	}
-	if value, ok := normalizeInt(tailnetCfg["mobileAuthKeyExpirySeconds"]); ok {
-		cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds = value
 	}
 
 	authCfg := mapValue(input, "auth")
@@ -643,9 +607,6 @@ func validateConfig(cfg Config) error {
 		if strings.TrimSpace(parsed.Host) == "" {
 			return errors.New("exposure.tailnet.mobileControlUrl must include a host")
 		}
-	}
-	if cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds <= 0 {
-		return errors.New("exposure.tailnet.mobileAuthKeyExpirySeconds must be a positive integer")
 	}
 	hasOAuthField := strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID) != "" ||
 		strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientSecret) != "" ||

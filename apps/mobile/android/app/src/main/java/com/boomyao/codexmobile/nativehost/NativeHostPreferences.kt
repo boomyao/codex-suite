@@ -31,6 +31,14 @@ class NativeHostPreferences(context: Context) {
         preferences.edit().putString(KEY_THEME_MODE, themeMode.storageValue).apply()
     }
 
+    fun shouldAutoResumeActiveSession(): Boolean {
+        return preferences.getBoolean(KEY_AUTO_RESUME_ACTIVE_SESSION, true)
+    }
+
+    fun setAutoResumeActiveSession(enabled: Boolean) {
+        preferences.edit().putBoolean(KEY_AUTO_RESUME_ACTIVE_SESSION, enabled).apply()
+    }
+
     fun applyThemeMode() {
         AppCompatDelegate.setDefaultNightMode(readThemeMode().appCompatMode)
     }
@@ -38,5 +46,6 @@ class NativeHostPreferences(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "codex_native_host_preferences"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_AUTO_RESUME_ACTIVE_SESSION = "auto_resume_active_session"
     }
 }

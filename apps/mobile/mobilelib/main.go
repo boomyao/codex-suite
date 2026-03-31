@@ -31,16 +31,18 @@ import (
 
 type enrollmentPayload struct {
 	Type                 string `json:"type"`
-	Version              int    `json:"version"`
 	BridgeID             string `json:"bridgeId,omitempty"`
 	BridgeName           string `json:"bridgeName,omitempty"`
 	BridgeServerEndpoint string `json:"bridgeServerEndpoint,omitempty"`
 	PairingCode          string `json:"pairingCode,omitempty"`
 	Tailnet              struct {
-		ControlURL string `json:"controlUrl,omitempty"`
-		AuthKey    string `json:"authKey,omitempty"`
-		Hostname   string `json:"hostname,omitempty"`
-		LoginMode  string `json:"loginMode,omitempty"`
+		ControlURL    string   `json:"controlUrl,omitempty"`
+		Hostname      string   `json:"hostname,omitempty"`
+		LoginMode     string   `json:"loginMode,omitempty"`
+		OAuthClientID string   `json:"oauthClientId,omitempty"`
+		OAuthTailnet  string   `json:"oauthTailnet,omitempty"`
+		OAuthTags     []string `json:"oauthTags,omitempty"`
+		ClientSecret  string   `json:"clientSecret,omitempty"`
 	} `json:"tailnet"`
 }
 
@@ -218,10 +220,24 @@ func CodexMobileConfigureBridgeProxyJSON(endpointC *C.char, authTokenC *C.char) 
 	session := activeSession
 	stateMu.Unlock()
 	if session == nil || session.proxy == nil {
+		state := snapshotRuntimeState()
+		errorMessage := strings.TrimSpace(state.LastError)
+		if errorMessage == "" {
+			errorMessage = "embedded tailnet runtime is not running"
+		}
 		return jsonCString(bridgeResponse{
 			OK:      false,
-			Running: false,
-			Error:   "embedded tailnet runtime is not running",
+			Running: state.Running,
+			Message: strings.TrimSpace(state.Message),
+			Error:   errorMessage,
+			Data: map[string]any{
+				"bridgeId":             bridgeIDFromPayload(state.Payload),
+				"bridgeName":           bridgeNameFromPayload(state.Payload),
+				"bridgeServerEndpoint": bridgeEndpointFromPayload(state.Payload),
+				"localProxyUrl":        state.LocalProxy,
+				"stateDir":             state.StateDir,
+				"auth":                 state.Auth,
+			},
 		})
 	}
 
@@ -268,19 +284,51 @@ func runRuntimeSession(ctx context.Context, session *runtimeSession) {
 	_ = os.Setenv("TMP", tempDir)
 	_ = os.Setenv("TEMP", tempDir)
 
-	server := &tsnet.Server{
-		Dir:        filepath.Join(session.stateDir, "tailscale"),
-		Hostname:   session.payload.Tailnet.Hostname,
-		ControlURL: session.payload.Tailnet.ControlURL,
-		AuthKey:    session.payload.Tailnet.AuthKey,
+	bootstrapSource := "client-secret"
+	server := newTailnetServer(session)
+	persistedState := hasPersistedTailnetState(server.Dir)
+	if persistedState {
+		bootstrapSource = "persisted-state"
 	}
-	if strings.TrimSpace(session.payload.Tailnet.Hostname) == "" {
-		server.Hostname = defaultHostname(session.payload)
-	}
+	log.Printf(
+		"codexmobile: starting tsnet runtime state_dir=%s persisted_state=%t bootstrap_source=%s endpoint=%s hostname=%s",
+		server.Dir,
+		persistedState,
+		bootstrapSource,
+		session.payload.BridgeServerEndpoint,
+		server.Hostname,
+	)
 
 	session.server = server
 	status, err := server.Up(ctx)
+	if err != nil && persistedState {
+		log.Printf(
+			"codexmobile: tsnet runtime failed with persisted state; clearing state_dir=%s endpoint=%s and retrying with enrollment client secret: %v",
+			server.Dir,
+			session.payload.BridgeServerEndpoint,
+			err,
+		)
+		_ = server.Close()
+		if removeErr := os.RemoveAll(server.Dir); removeErr != nil {
+			log.Printf("codexmobile: failed to clear persisted tailscale state %s: %v", server.Dir, removeErr)
+		}
+		if mkdirErr := os.MkdirAll(server.Dir, 0o755); mkdirErr != nil {
+			log.Printf("codexmobile: failed to recreate tailscale state dir %s: %v", server.Dir, mkdirErr)
+		}
+		server = newTailnetServer(session)
+		session.server = server
+		persistedState = false
+		bootstrapSource = "client-secret"
+		status, err = server.Up(ctx)
+	}
 	if err != nil {
+		log.Printf(
+			"codexmobile: tsnet runtime failed state_dir=%s persisted_state=%t endpoint=%s err=%v",
+			server.Dir,
+			persistedState,
+			session.payload.BridgeServerEndpoint,
+			err,
+		)
 		updateRuntimeState(func(state *runtimeState) {
 			state.Running = false
 			state.Starting = false
@@ -357,6 +405,14 @@ func runRuntimeSession(ctx context.Context, session *runtimeSession) {
 		state.Payload = session.payload
 		state.Auth = authStatusFromIPN(status)
 	})
+	log.Printf(
+		"codexmobile: tsnet runtime connected state_dir=%s persisted_state=%t endpoint=%s backend_state=%s local_proxy=%s",
+		server.Dir,
+		persistedState,
+		session.payload.BridgeServerEndpoint,
+		status.BackendState,
+		proxy.baseURL,
+	)
 
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -703,6 +759,42 @@ func proxyURLFromSession(session *runtimeSession) string {
 	return strings.TrimSpace(session.proxy.baseURL)
 }
 
+func hasPersistedTailnetState(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if name == "" || strings.HasPrefix(name, ".") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func payloadOAuthTags(payload *enrollmentPayload) []string {
+	if payload == nil || len(payload.Tailnet.OAuthTags) == 0 {
+		return nil
+	}
+	return append([]string{}, payload.Tailnet.OAuthTags...)
+}
+
+func newTailnetServer(session *runtimeSession) *tsnet.Server {
+	server := &tsnet.Server{
+		Dir:        filepath.Join(session.stateDir, "tailscale"),
+		Hostname:   session.payload.Tailnet.Hostname,
+		ControlURL: session.payload.Tailnet.ControlURL,
+	}
+	if strings.TrimSpace(server.Hostname) == "" {
+		server.Hostname = defaultHostname(session.payload)
+	}
+	server.ClientSecret = strings.TrimSpace(session.payload.Tailnet.ClientSecret)
+	server.AdvertiseTags = payloadOAuthTags(session.payload)
+	return server
+}
+
 func bridgeIDFromPayload(payload *enrollmentPayload) string {
 	if payload == nil {
 		return ""
@@ -746,14 +838,23 @@ func parsePayload(raw *C.char) (*enrollmentPayload, error) {
 	if err := json.Unmarshal([]byte(text), &payload); err != nil {
 		return nil, errString("enrollment payload is not valid JSON")
 	}
-	if payload.Type != "codex-mobile-enrollment" || payload.Version != 1 {
+	if payload.Type != "codex-mobile-enrollment" {
 		return nil, errString("unsupported enrollment payload type")
 	}
 	if strings.TrimSpace(payload.BridgeServerEndpoint) == "" {
 		return nil, errString("enrollment payload is missing bridgeServerEndpoint")
 	}
-	if strings.TrimSpace(payload.Tailnet.AuthKey) == "" {
-		return nil, errString("enrollment payload is missing tailnet.authKey")
+	if strings.TrimSpace(payload.Tailnet.ClientSecret) == "" {
+		return nil, errString("enrollment payload is missing tailnet.clientSecret")
+	}
+	if strings.TrimSpace(payload.Tailnet.OAuthClientID) == "" {
+		return nil, errString("enrollment payload is missing tailnet.oauthClientId")
+	}
+	if strings.TrimSpace(payload.Tailnet.OAuthTailnet) == "" {
+		return nil, errString("enrollment payload is missing tailnet.oauthTailnet")
+	}
+	if len(payload.Tailnet.OAuthTags) == 0 {
+		return nil, errString("enrollment payload must include tailnet.oauthTags")
 	}
 	return &payload, nil
 }

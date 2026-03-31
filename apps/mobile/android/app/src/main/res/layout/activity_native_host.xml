@@ -378,8 +378,9 @@
                 android:scrollbars="none">
 
                 <LinearLayout
+                    android:id="@+id/nativeHostEmptyStateContent"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="match_parent"
                     android:orientation="vertical"
                     android:paddingStart="24dp"
                     android:paddingTop="24dp"
@@ -416,6 +417,188 @@
                             android:contentDescription="@string/app_name"
                             android:src="@drawable/splashscreen_logo" />
 
+                        <LinearLayout
+                            android:id="@+id/nativeHostWelcomeSceneCard"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="18dp"
+                            android:background="@drawable/bg_native_host_scene"
+                            android:orientation="vertical"
+                            android:padding="18dp"
+                            android:visibility="gone">
+
+                            <TextView
+                                android:id="@+id/nativeHostWelcomeSceneEyebrow"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:background="@drawable/bg_native_host_badge"
+                                android:paddingStart="12dp"
+                                android:paddingTop="6dp"
+                                android:paddingEnd="12dp"
+                                android:paddingBottom="6dp"
+                                android:text="@string/native_host_welcome_scene_eyebrow"
+                                android:textColor="@color/nativeHostHeroBadgeText"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="16dp"
+                                android:baselineAligned="false"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <LinearLayout
+                                    android:layout_width="0dp"
+                                    android:layout_height="140dp"
+                                    android:layout_weight="1"
+                                    android:background="@drawable/bg_native_host_scene_panel"
+                                    android:elevation="2dp"
+                                    android:orientation="vertical"
+                                    android:padding="14dp">
+
+                                    <LinearLayout
+                                        android:layout_width="match_parent"
+                                        android:layout_height="wrap_content"
+                                        android:gravity="center_vertical"
+                                        android:orientation="horizontal">
+
+                                        <ImageView
+                                            android:layout_width="18dp"
+                                            android:layout_height="18dp"
+                                            android:contentDescription="@string/app_name"
+                                            android:src="@drawable/splashscreen_logo" />
+
+                                        <TextView
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginStart="8dp"
+                                            android:text="@string/native_host_welcome_scene_desktop"
+                                            android:textColor="@color/nativeHostTextPrimary"
+                                            android:textSize="11sp"
+                                            android:textStyle="bold" />
+                                    </LinearLayout>
+
+                                    <View
+                                        android:layout_width="match_parent"
+                                        android:layout_height="10dp"
+                                        android:layout_marginTop="14dp"
+                                        android:background="@color/nativeHostAccentMuted" />
+
+                                    <View
+                                        android:layout_width="76dp"
+                                        android:layout_height="10dp"
+                                        android:layout_marginTop="10dp"
+                                        android:background="@color/nativeHostSurfaceAlt" />
+
+                                    <LinearLayout
+                                        android:layout_width="match_parent"
+                                        android:layout_height="0dp"
+                                        android:layout_marginTop="14dp"
+                                        android:layout_weight="1"
+                                        android:background="@color/nativeHostWebSurface"
+                                        android:orientation="vertical"
+                                        android:padding="10dp">
+
+                                        <View
+                                            android:layout_width="match_parent"
+                                            android:layout_height="8dp"
+                                            android:background="@color/nativeHostAccentMuted" />
+
+                                        <View
+                                            android:layout_width="match_parent"
+                                            android:layout_height="8dp"
+                                            android:layout_marginTop="8dp"
+                                            android:background="@color/nativeHostSurfaceAlt" />
+
+                                        <View
+                                            android:layout_width="58dp"
+                                            android:layout_height="8dp"
+                                            android:layout_marginTop="8dp"
+                                            android:background="@color/nativeHostSurfaceAlt" />
+                                    </LinearLayout>
+                                </LinearLayout>
+
+                                <FrameLayout
+                                    android:layout_width="52dp"
+                                    android:layout_height="52dp"
+                                    android:layout_marginStart="10dp"
+                                    android:layout_marginEnd="10dp"
+                                    android:background="@drawable/bg_native_host_scene_badge">
+
+                                    <ImageView
+                                        android:layout_width="24dp"
+                                        android:layout_height="24dp"
+                                        android:layout_gravity="center"
+                                        android:contentDescription="@string/native_host_empty_action_start"
+                                        android:src="@drawable/ic_native_host_scan"
+                                        android:tint="@android:color/white" />
+                                </FrameLayout>
+
+                                <LinearLayout
+                                    android:layout_width="92dp"
+                                    android:layout_height="160dp"
+                                    android:background="@drawable/bg_native_host_scene_panel"
+                                    android:elevation="4dp"
+                                    android:orientation="vertical"
+                                    android:padding="12dp">
+
+                                    <TextView
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:text="@string/native_host_welcome_scene_phone"
+                                        android:textColor="@color/nativeHostTextPrimary"
+                                        android:textSize="11sp"
+                                        android:textStyle="bold" />
+
+                                    <View
+                                        android:layout_width="match_parent"
+                                        android:layout_height="1dp"
+                                        android:layout_marginTop="10dp"
+                                        android:background="@color/nativeHostDivider" />
+
+                                    <LinearLayout
+                                        android:layout_width="match_parent"
+                                        android:layout_height="0dp"
+                                        android:layout_marginTop="12dp"
+                                        android:layout_weight="1"
+                                        android:background="@color/nativeHostWebSurface"
+                                        android:gravity="center"
+                                        android:orientation="vertical"
+                                        android:padding="10dp">
+
+                                        <ImageView
+                                            android:layout_width="24dp"
+                                            android:layout_height="24dp"
+                                            android:contentDescription="@string/app_name"
+                                            android:src="@drawable/splashscreen_logo" />
+
+                                        <View
+                                            android:layout_width="match_parent"
+                                            android:layout_height="8dp"
+                                            android:layout_marginTop="12dp"
+                                            android:background="@color/nativeHostAccentMuted" />
+
+                                        <View
+                                            android:layout_width="42dp"
+                                            android:layout_height="8dp"
+                                            android:layout_marginTop="8dp"
+                                            android:background="@color/nativeHostSurfaceAlt" />
+                                    </LinearLayout>
+                                </LinearLayout>
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/nativeHostWelcomeSceneCaption"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="14dp"
+                                android:text="@string/native_host_welcome_scene_caption"
+                                android:textColor="@color/nativeHostTextSecondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+
                         <TextView
                             android:id="@+id/nativeHostWorkspaceEmptyTitle"
                             android:layout_width="match_parent"
@@ -437,6 +620,56 @@
                             android:text="@string/native_host_workspace_preview_body"
                             android:textColor="@color/nativeHostTextSecondary"
                             android:textSize="14sp" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/nativeHostWelcomePrimaryAction"
+                            style="@style/Widget.MaterialComponents.Button"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="18dp"
+                            android:minHeight="56dp"
+                            android:text="@string/native_host_empty_action_start"
+                            android:textAllCaps="false"
+                            android:textColor="@android:color/white"
+                            android:visibility="gone"
+                            app:backgroundTint="@color/nativeHostAccent"
+                            app:cornerRadius="20dp"
+                            app:icon="@drawable/ic_native_host_scan"
+                            app:iconGravity="textStart"
+                            app:iconPadding="8dp"
+                            app:iconTint="@android:color/white"
+                            app:rippleColor="@color/nativeHostAccentMuted"
+                            app:strokeWidth="0dp" />
+
+                        <LinearLayout
+                            android:id="@+id/nativeHostWelcomeGuideCard"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="18dp"
+                            android:background="@drawable/bg_native_host_subtle"
+                            android:orientation="vertical"
+                            android:padding="18dp"
+                            android:visibility="gone">
+
+                            <TextView
+                                android:id="@+id/nativeHostWelcomeGuideTitle"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="@string/native_host_welcome_guide_title"
+                                android:textColor="@color/nativeHostTextPrimary"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/nativeHostWelcomeGuideBody"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:lineSpacingExtra="3dp"
+                                android:text="@string/native_host_welcome_guide_body"
+                                android:textColor="@color/nativeHostTextSecondary"
+                                android:textSize="12sp" />
+                        </LinearLayout>
                     </LinearLayout>
 
                     <LinearLayout
@@ -503,23 +736,22 @@
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/nativeHostConnectionButton"
-                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            style="@style/Widget.MaterialComponents.Button"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:layout_marginTop="14dp"
                             android:minHeight="56dp"
                             android:text="@string/native_host_empty_action"
                             android:textAllCaps="false"
-                            android:textColor="@color/nativeHostTextPrimary"
-                            app:backgroundTint="@color/nativeHostSurface"
+                            android:textColor="@android:color/white"
+                            app:backgroundTint="@color/nativeHostAccent"
                             app:cornerRadius="20dp"
                             app:icon="@drawable/ic_native_host_scan"
                             app:iconGravity="textStart"
                             app:iconPadding="8dp"
-                            app:iconTint="@color/nativeHostAccent"
+                            app:iconTint="@android:color/white"
                             app:rippleColor="@color/nativeHostAccentMuted"
-                            app:strokeColor="@color/nativeHostDividerStrong"
-                            app:strokeWidth="1dp" />
+                            app:strokeWidth="0dp" />
                     </LinearLayout>
                 </LinearLayout>
             </androidx.core.widget.NestedScrollView>

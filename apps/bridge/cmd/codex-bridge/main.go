@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,7 +34,6 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/term"
 	"tailscale.com/client/local"
-	tsclient "tailscale.com/client/tailscale"
 	"tailscale.com/ipn/ipnstate"
 )
 
@@ -41,10 +44,10 @@ const (
 	commandPrintConfig commandName = "print-config"
 	commandInitConfig  commandName = "init-config"
 	commandStop        commandName = "stop"
+	commandQR          commandName = "qr"
 
 	macOSBundledCodexPath = "/Applications/Codex.app/Contents/Resources/codex"
 	tailscaleDownloadURL  = "https://tailscale.com/download"
-	tailscaleKeysURL      = "https://login.tailscale.com/admin/settings/keys"
 )
 
 var (
@@ -105,7 +108,6 @@ type commandOptions struct {
 	backgroundChild                bool
 	startupReportFile              string
 	daemonLogFile                  string
-	mobileAPITokenFile             string
 	runtimeMode                    string
 	runtimeRemoteURL               string
 	runtimeListenHost              string
@@ -161,6 +163,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return runInitConfig(options, stdout, stderr)
 	case commandStop:
 		return runStop(options, stdout, stderr)
+	case commandQR:
+		return runQR(options, stdout, stderr)
 	case commandStart:
 		return runStart(args, options, stderr, logger)
 	default:
@@ -174,7 +178,7 @@ func parseCLI(args []string) (commandName, commandOptions, error) {
 	flagArgs := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
-		case string(commandStart), string(commandPrintConfig), string(commandInitConfig), string(commandStop):
+		case string(commandStart), string(commandPrintConfig), string(commandInitConfig), string(commandStop), string(commandQR):
 			command = commandName(args[0])
 			flagArgs = args[1:]
 		default:
@@ -232,7 +236,6 @@ func parseOptions(name string, args []string) (commandOptions, error) {
 	flagSet.BoolVar(&options.backgroundChild, "background-child", false, "internal: detached child process")
 	flagSet.StringVar(&options.startupReportFile, "startup-report-file", "", "internal: detached startup report file")
 	flagSet.StringVar(&options.daemonLogFile, "daemon-log-file", "", "internal: detached process log file")
-	flagSet.StringVar(&options.mobileAPITokenFile, "mobile-api-token-file", "", "internal: one-time mobile API token file")
 
 	flagSet.Usage = func() {
 		fmt.Fprintf(flagSet.Output(), "Usage:\n")
@@ -240,6 +243,7 @@ func parseOptions(name string, args []string) (commandOptions, error) {
 		fmt.Fprintf(flagSet.Output(), "  codex-bridge print-config [options]\n")
 		fmt.Fprintf(flagSet.Output(), "  codex-bridge init-config [options]\n")
 		fmt.Fprintf(flagSet.Output(), "  codex-bridge stop [options]\n")
+		fmt.Fprintf(flagSet.Output(), "  codex-bridge qr [options]\n")
 		flagSet.VisitAll(func(fl *flag.Flag) {
 			if isInternalFlag(fl.Name) {
 				return
@@ -272,7 +276,7 @@ func parseOptions(name string, args []string) (commandOptions, error) {
 
 func isInternalFlag(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "background-child", "startup-report-file", "daemon-log-file", "mobile-api-token-file":
+	case "background-child", "startup-report-file", "daemon-log-file":
 		return true
 	default:
 		return false
@@ -359,6 +363,71 @@ func runStop(options commandOptions, stdout, stderr *os.File) int {
 	return 0
 }
 
+func runQR(options commandOptions, stdout, stderr *os.File) int {
+	cfg, configPath, err := loadEffectiveConfig(options)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	pidPath := bridgePIDFilePath(configPath)
+	pid, err := readBridgePIDFile(pidPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(stderr, "codex-bridge is not running for %s\n", configPath)
+			return 1
+		}
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	running, err := processExists(pid)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if !running {
+		_ = os.Remove(pidPath)
+		fmt.Fprintf(stderr, "codex-bridge is not running for %s\n", configPath)
+		return 1
+	}
+
+	baseURL, err := localBridgeHTTPURL(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	payload, err := fetchRunningBridgeMobileEnrollment(baseURL)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	body, err := json.Marshal(payload.Payload)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	qr, err := buildStartupMobileQR(body)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
+	if payload.Pairing != nil && strings.TrimSpace(payload.Pairing.Code) != "" {
+		fmt.Fprintf(stdout, "mobile pairing code: %s\n", payload.Pairing.Code)
+		fmt.Fprintf(stdout, "mobile pairing expires at: %s\n", payload.Pairing.ExpiresAt.Format(time.RFC3339))
+	}
+	fmt.Fprintf(stdout, "mobile enrollment payload: %s\n", string(body))
+	fmt.Fprintf(stdout, "mobile QR:\n%s\n", qr)
+	return 0
+}
+
 func runStart(args []string, options commandOptions, stderr *os.File, logger *log.Logger) int {
 	cfg, configPath, err := loadEffectiveConfig(options)
 	if err != nil {
@@ -375,21 +444,14 @@ func runStart(args []string, options commandOptions, stderr *os.File, logger *lo
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
-	mobileAPIToken := ""
-	if options.backgroundChild {
-		mobileAPIToken, err = consumeOneTimeSecretFile(options.mobileAPITokenFile)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-	} else {
-		mobileAPIToken, err = prepareTailnetStartup(ctx, cfg, configPath, stderr, logger)
+	if !options.backgroundChild {
+		cfg, err = prepareTailnetStartup(ctx, cfg, configPath, stderr, logger)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 		if shouldAutoBackground(options, stderr) {
-			if exitCode, detached := runDetachedStart(ctx, args, options, cfg, configPath, mobileAPIToken, stderr, logger); detached {
+			if exitCode, detached := runDetachedStart(ctx, args, cfg, configPath, stderr, logger); detached {
 				return exitCode
 			}
 		}
@@ -420,7 +482,7 @@ func runStart(args []string, options commandOptions, stderr *os.File, logger *lo
 		return 1
 	}
 
-	bridgeConfig, err := buildBridgeConfig(cfg, configPath, runtimeInfo.AppServerWebSocketURL, mobileAPIToken, releaseRuntime, releaseRuntimeActivated)
+	bridgeConfig, err := buildBridgeConfig(cfg, configPath, runtimeInfo.AppServerWebSocketURL, releaseRuntime, releaseRuntimeActivated)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		_ = runtimeManager.Stop(context.Background())
@@ -509,7 +571,6 @@ type startupReport struct {
 	BridgeHTTPURL           string `json:"bridgeHttpUrl,omitempty"`
 	BridgeReadyURL          string `json:"bridgeReadyUrl,omitempty"`
 	BridgeWebSocketURL      string `json:"bridgeWebSocketUrl,omitempty"`
-	LocalAuthURL            string `json:"localAuthUrl,omitempty"`
 	PairingCode             string `json:"pairingCode,omitempty"`
 	PairingExpiresAt        string `json:"pairingExpiresAt,omitempty"`
 	MobileEnrollmentPayload string `json:"mobileEnrollmentPayload,omitempty"`
@@ -633,7 +694,7 @@ func shouldAutoBackground(options commandOptions, stderr *os.File) bool {
 	return term.IsTerminal(int(stderr.Fd()))
 }
 
-func runDetachedStart(ctx context.Context, args []string, options commandOptions, cfg config.Config, configPath string, mobileAPIToken string, stderr *os.File, logger *log.Logger) (int, bool) {
+func runDetachedStart(ctx context.Context, args []string, cfg config.Config, configPath string, stderr *os.File, logger *log.Logger) (int, bool) {
 	logFilePath, err := createDetachedLogFile(configPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -646,25 +707,15 @@ func runDetachedStart(ctx context.Context, args []string, options commandOptions
 		return 1, true
 	}
 
-	tokenFilePath := ""
-	if strings.TrimSpace(mobileAPIToken) != "" {
-		tokenFilePath, err = createOneTimeSecretFile("codex-bridge-mobile-api-token-", mobileAPIToken)
-		if err != nil {
-			_ = os.Remove(startupReportPath)
-			fmt.Fprintln(stderr, err)
-			return 1, true
-		}
-	}
-
-	cmd, err := buildDetachedCommand(args, logFilePath, startupReportPath, tokenFilePath)
+	cmd, err := buildDetachedCommand(args, logFilePath, startupReportPath)
 	if err != nil {
-		cleanupDetachedArtifacts(startupReportPath, tokenFilePath)
+		cleanupDetachedArtifacts(startupReportPath)
 		fmt.Fprintln(stderr, err)
 		return 1, true
 	}
 
 	if err := cmd.Start(); err != nil {
-		cleanupDetachedArtifacts(startupReportPath, tokenFilePath)
+		cleanupDetachedArtifacts(startupReportPath)
 		fmt.Fprintln(stderr, err)
 		return 1, true
 	}
@@ -672,12 +723,12 @@ func runDetachedStart(ctx context.Context, args []string, options commandOptions
 	_ = cmd.Process.Release()
 
 	report, reportErr := waitForStartupReport(ctx, startupReportPath, 30*time.Second)
-	cleanupDetachedArtifacts(startupReportPath, tokenFilePath)
+	cleanupDetachedArtifacts(startupReportPath)
 	if reportErr != nil {
 		if logger != nil {
 			logger.Printf("%s [codex-bridge] launched in background with pid %d", time.Now().UTC().Format(time.RFC3339), pid)
 			logger.Printf("%s [codex-bridge] startup is still in progress; logs: %s", time.Now().UTC().Format(time.RFC3339), logFilePath)
-			logger.Printf("%s [codex-bridge] if startup succeeds, local auth page will appear in that log", time.Now().UTC().Format(time.RFC3339))
+			logger.Printf("%s [codex-bridge] if startup succeeds, use `codex-bridge qr` to generate a fresh mobile QR", time.Now().UTC().Format(time.RFC3339))
 		}
 		return 0, true
 	}
@@ -725,14 +776,38 @@ func startExposureStatusLoop(ctx context.Context, provider exposure.Provider, br
 	}()
 }
 
-func prepareTailnetStartup(ctx context.Context, cfg config.Config, configPath string, stderr *os.File, logger *log.Logger) (string, error) {
+func prepareTailnetStartup(ctx context.Context, cfg config.Config, configPath string, stderr *os.File, logger *log.Logger) (config.Config, error) {
 	if cfg.Exposure.Mode != config.ExposureModeTailnet {
-		return "", nil
+		return cfg, nil
 	}
 	if err := waitForLocalTailnetReady(ctx, cfg, logger); err != nil {
-		return "", err
+		return cfg, err
 	}
-	return resolveMobileAPIToken(cfg, configPath, stderr, logger)
+	cfg, err := maybeBootstrapTailnetMobileEnrollment(cfg, configPath, stderr, logger)
+	if err != nil {
+		return cfg, err
+	}
+	if err := validateTailnetMobileEnrollmentOAuth(ctx, cfg); err != nil {
+		repairedCfg, repaired, repairErr := maybeRepairTailnetMobileEnrollmentOAuth(ctx, cfg, configPath, stderr, logger, err)
+		if repairErr != nil {
+			return repairedCfg, repairErr
+		}
+		if !repaired {
+			return cfg, fmt.Errorf("tailnet mobile enrollment OAuth validation failed: %w", err)
+		}
+		cfg = repairedCfg
+		if err := validateTailnetMobileEnrollmentOAuth(ctx, cfg); err != nil {
+			return cfg, fmt.Errorf("tailnet mobile enrollment OAuth validation failed after reconfiguration: %w", err)
+		}
+	}
+	if logger != nil && strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID) != "" {
+		logger.Printf(
+			"%s [codex-bridge] validated tailnet mobile enrollment OAuth client %s",
+			time.Now().UTC().Format(time.RFC3339),
+			strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID),
+		)
+	}
+	return cfg, nil
 }
 
 func waitForLocalTailnetReady(ctx context.Context, cfg config.Config, logger *log.Logger) error {
@@ -862,106 +937,6 @@ func tryLaunchLocalTailscaleApp(logger *log.Logger) (bool, error) {
 	}
 }
 
-func resolveMobileAPIToken(cfg config.Config, configPath string, stderr *os.File, logger *log.Logger) (string, error) {
-	if !needsMobileAPIToken(cfg) {
-		return "", nil
-	}
-	if token := strings.TrimSpace(os.Getenv("CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN")); token != "" {
-		if err := validateMobileAPIToken(token); err != nil {
-			return "", fmt.Errorf("CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN is invalid: %w", err)
-		}
-		if logger != nil {
-			logger.Printf("%s [codex-bridge] using Tailscale mobile API token from CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN", time.Now().UTC().Format(time.RFC3339))
-		}
-		return token, nil
-	}
-	if token := strings.TrimSpace(cfg.Exposure.Tailnet.MobileAPIAccessToken); token != "" {
-		if err := validateMobileAPIToken(token); err != nil {
-			return "", fmt.Errorf("configured exposure.tailnet.mobileApiAccessToken is invalid: %w", err)
-		}
-		if logger != nil {
-			logger.Printf("%s [codex-bridge] using Tailscale mobile API token from %s", time.Now().UTC().Format(time.RFC3339), configPath)
-		}
-		return token, nil
-	}
-	if stderr == nil || !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("tailnet mobile enrollment needs a Tailscale API access token; create one at https://login.tailscale.com/admin/settings/keys and provide it via exposure.tailnet.mobileApiAccessToken in %s, CODEX_EXPOSURE_TAILNET_MOBILE_API_TOKEN, or an interactive terminal", configPath)
-	}
-
-	if logger != nil {
-		logger.Printf("%s [codex-bridge] tailnet mobile enrollment is not configured", time.Now().UTC().Format(time.RFC3339))
-		logger.Printf("%s [codex-bridge] opening Tailscale Keys page so you can create an API access token", time.Now().UTC().Format(time.RFC3339))
-		logger.Printf("%s [codex-bridge] once validated, the token will be saved to %s", time.Now().UTC().Format(time.RFC3339), configPath)
-	}
-	_, _ = openURLInBrowser(tailscaleKeysURL)
-
-	for {
-		fmt.Fprintln(stderr, "1. Create a Tailscale API access token in the opened browser page.")
-		fmt.Fprintln(stderr, "2. Copy the tskey-api token.")
-		fmt.Fprintln(stderr, "3. Paste it below. Press Enter on an empty line to skip tailnet auto-enrollment.")
-		fmt.Fprint(stderr, "Tailscale API access token (input hidden): ")
-		raw, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Fprintln(stderr)
-		if err != nil {
-			return "", fmt.Errorf("read tailscale API access token: %w", err)
-		}
-
-		token := strings.TrimSpace(string(raw))
-		if token == "" {
-			if logger != nil {
-				logger.Printf("%s [codex-bridge] continuing without a Tailscale mobile API token; mobile QR codes will not auto-join devices to the tailnet", time.Now().UTC().Format(time.RFC3339))
-			}
-			return "", nil
-		}
-		if err := validateMobileAPIToken(token); err != nil {
-			fmt.Fprintf(stderr, "Token validation failed: %v\n", err)
-			if logger != nil {
-				logger.Printf("%s [codex-bridge] the provided Tailscale API token is not usable yet: %v", time.Now().UTC().Format(time.RFC3339), err)
-			}
-			continue
-		}
-		if err := persistMobileAPIToken(configPath, token); err != nil {
-			return "", err
-		}
-		if logger != nil {
-			logger.Printf("%s [codex-bridge] saved Tailscale mobile API token to %s", time.Now().UTC().Format(time.RFC3339), configPath)
-		}
-		return token, nil
-	}
-}
-
-func needsMobileAPIToken(cfg config.Config) bool {
-	if cfg.Exposure.Mode != config.ExposureModeTailnet {
-		return false
-	}
-	if cfg.Auth.Mode != config.AuthModeDeviceToken {
-		return false
-	}
-	tailnetCfg := cfg.Exposure.Tailnet
-	if strings.TrimSpace(tailnetCfg.MobileAuthKey) != "" {
-		return false
-	}
-	if strings.TrimSpace(tailnetCfg.MobileOAuthClientID) != "" &&
-		strings.TrimSpace(tailnetCfg.MobileOAuthClientSecret) != "" &&
-		strings.TrimSpace(tailnetCfg.MobileOAuthTailnet) != "" &&
-		len(tailnetCfg.MobileOAuthTags) > 0 {
-		return false
-	}
-	return true
-}
-
-func persistMobileAPIToken(configPath string, token string) error {
-	fileConfig, err := config.LoadConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("load config for Tailscale mobile API token persistence: %w", err)
-	}
-	fileConfig.Exposure.Tailnet.MobileAPIAccessToken = strings.TrimSpace(token)
-	if err := config.SaveConfig(configPath, fileConfig); err != nil {
-		return fmt.Errorf("persist Tailscale mobile API token: %w", err)
-	}
-	return nil
-}
-
 func emptyIfBlank(value string, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -982,23 +957,65 @@ func isTailscaleLikelyInstalled() bool {
 	return false
 }
 
-func validateMobileAPIToken(token string) error {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return errors.New("missing token")
-	}
+type localMobileEnrollmentResponse struct {
+	OK      bool              `json:"ok"`
+	Error   string            `json:"error,omitempty"`
+	Pairing *auth.PairingInfo `json:"pairing,omitempty"`
+	Payload map[string]any    `json:"payload,omitempty"`
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	tsclient.I_Acknowledge_This_API_Is_Unstable = true
-	client := tsclient.NewClient("-", tsclient.APIKey(token))
-	client.BaseURL = "https://api.tailscale.com"
-	client.UserAgent = "codex-bridge"
-	if _, err := client.Keys(ctx); err != nil {
-		return err
+func localBridgeHTTPURL(cfg config.Config) (string, error) {
+	port := cfg.Gateway.Port
+	if port <= 0 {
+		return "", errors.New("gateway.port must be set to a fixed local port for codex-bridge qr")
 	}
-	return nil
+	host := strings.TrimSpace(cfg.Gateway.Host)
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%d", host, port), nil
+}
+
+func fetchRunningBridgeMobileEnrollment(baseURL string) (localMobileEnrollmentResponse, error) {
+	request, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		strings.TrimRight(baseURL, "/")+bridge.LocalMobileEnrollmentPath,
+		nil,
+	)
+	if err != nil {
+		return localMobileEnrollmentResponse{}, err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return localMobileEnrollmentResponse{}, fmt.Errorf("request running bridge mobile enrollment: %w", err)
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return localMobileEnrollmentResponse{}, fmt.Errorf("read running bridge mobile enrollment response: %w", err)
+	}
+	var payload localMobileEnrollmentResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		message := strings.TrimSpace(string(body))
+		if response.StatusCode >= http.StatusBadRequest && message != "" {
+			return localMobileEnrollmentResponse{}, errors.New("running bridge does not support `codex-bridge qr` yet; restart it with the updated binary")
+		}
+		return localMobileEnrollmentResponse{}, fmt.Errorf("decode running bridge mobile enrollment response: %w", err)
+	}
+	if response.StatusCode != http.StatusOK || !payload.OK {
+		message := strings.TrimSpace(payload.Error)
+		if message == "" {
+			message = response.Status
+		}
+		return localMobileEnrollmentResponse{}, fmt.Errorf("running bridge mobile enrollment failed: %s", message)
+	}
+	if len(payload.Payload) == 0 {
+		return localMobileEnrollmentResponse{}, errors.New("running bridge mobile enrollment response did not include a payload")
+	}
+	return payload, nil
 }
 
 func openURLInBrowser(rawURL string) (bool, error) {
@@ -1026,7 +1043,6 @@ func buildStartupReport(bridgeServer *bridge.Bridge, authorizer auth.Authorizer,
 		report.BridgeHTTPURL = bridgeInfo.BridgeHTTPURL
 		report.BridgeReadyURL = bridgeInfo.BridgeReadyURL
 		report.BridgeWebSocketURL = bridgeInfo.BridgeWebSocketURL
-		report.LocalAuthURL = strings.TrimRight(bridgeInfo.BridgeHTTPURL, "/") + "/auth/local"
 	}
 	if bridgeServer == nil {
 		report.MobileQRError = "bridge server is not available"
@@ -1071,7 +1087,6 @@ func buildStartupMobileQR(body []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	qr.DisableBorder = true
 	return qr.ToSmallString(false), nil
 }
 
@@ -1084,9 +1099,6 @@ func logStartupReport(logger *log.Logger, report startupReport) {
 	}
 	if report.PairingExpiresAt != "" {
 		logger.Printf("%s [codex-bridge] mobile pairing expires at: %s", time.Now().UTC().Format(time.RFC3339), report.PairingExpiresAt)
-	}
-	if report.LocalAuthURL != "" {
-		logger.Printf("%s [codex-bridge] local auth page: %s", time.Now().UTC().Format(time.RFC3339), report.LocalAuthURL)
 	}
 	if report.MobileEnrollmentPayload != "" {
 		logger.Printf("%s [codex-bridge] mobile enrollment payload: %s", time.Now().UTC().Format(time.RFC3339), report.MobileEnrollmentPayload)
@@ -1124,43 +1136,7 @@ func createStartupReportPath() (string, error) {
 	return path, nil
 }
 
-func createOneTimeSecretFile(prefix string, value string) (string, error) {
-	file, err := os.CreateTemp("", prefix+"*")
-	if err != nil {
-		return "", fmt.Errorf("create one-time secret file: %w", err)
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("protect one-time secret file: %w", err)
-	}
-	if _, err := file.WriteString(strings.TrimSpace(value)); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("write one-time secret file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", fmt.Errorf("close one-time secret file: %w", err)
-	}
-	return path, nil
-}
-
-func consumeOneTimeSecretFile(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return "", nil
-	}
-	body, err := os.ReadFile(path)
-	_ = os.Remove(path)
-	if err != nil {
-		return "", fmt.Errorf("read one-time secret file: %w", err)
-	}
-	return strings.TrimSpace(string(body)), nil
-}
-
-func buildDetachedCommand(args []string, logFilePath string, startupReportPath string, tokenFilePath string) (*exec.Cmd, error) {
+func buildDetachedCommand(args []string, logFilePath string, startupReportPath string) (*exec.Cmd, error) {
 	executablePath, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve executable path: %w", err)
@@ -1176,9 +1152,6 @@ func buildDetachedCommand(args []string, logFilePath string, startupReportPath s
 
 	childArgs := append([]string{}, args...)
 	childArgs = append(childArgs, "--background-child", "--startup-report-file", startupReportPath, "--daemon-log-file", logFilePath)
-	if tokenFilePath != "" {
-		childArgs = append(childArgs, "--mobile-api-token-file", tokenFilePath)
-	}
 
 	cmd := exec.Command(executablePath, childArgs...)
 	cmd.Stdout = logFile
@@ -1558,11 +1531,42 @@ func ensureRuntimeCodexHome(cfg config.Config, configPath string) (string, error
 	return runtimeCodexHome, nil
 }
 
+func ensureBridgeID(configPath string) (string, error) {
+	configDir := strings.TrimSpace(filepath.Dir(strings.TrimSpace(configPath)))
+	if configDir == "" || configDir == "." {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		configDir = filepath.Join(homeDir, ".codex-bridge")
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return "", err
+	}
+	identityPath := filepath.Join(configDir, "bridge-id")
+	if content, err := os.ReadFile(identityPath); err == nil {
+		if bridgeID := strings.TrimSpace(string(content)); bridgeID != "" {
+			return bridgeID, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+	bridgeID := "bridge_" + hex.EncodeToString(randomBytes)
+	if err := os.WriteFile(identityPath, []byte(bridgeID+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return bridgeID, nil
+}
+
 func buildBridgeConfig(
 	cfg config.Config,
 	configPath string,
 	upstreamURL string,
-	mobileAPIToken string,
 	releaseRuntime runtimestore.ActivatedRuntime,
 	releaseRuntimeActivated bool,
 ) (bridge.Config, error) {
@@ -1586,8 +1590,13 @@ func buildBridgeConfig(
 			"no desktop webview bundle available; provide --desktop-webview-root, place desktop-webview assets next to the bridge binary, or activate a packaged runtime",
 		)
 	}
+	bridgeID, err := ensureBridgeID(configPath)
+	if err != nil {
+		return bridge.Config{}, err
+	}
 
 	return bridge.Config{
+		BridgeID:           bridgeID,
 		Host:               cfg.Gateway.Host,
 		Port:               cfg.Gateway.Port,
 		UpstreamURL:        upstreamURL,
@@ -1599,16 +1608,12 @@ func buildBridgeConfig(
 		DesktopWebviewRoot: desktopWebviewRoot,
 		UIPathPrefix:       cfg.Gateway.UIPathPrefix,
 		MobileEnrollment: bridge.MobileEnrollmentConfig{
-			ControlURL:           cfg.Exposure.Tailnet.MobileControlURL,
-			AuthKey:              cfg.Exposure.Tailnet.MobileAuthKey,
-			APIAccessToken:       emptyIfBlank(mobileAPIToken, cfg.Exposure.Tailnet.MobileAPIAccessToken),
-			Hostname:             cfg.Exposure.Tailnet.MobileHostname,
-			LoginMode:            cfg.Exposure.Tailnet.MobileLoginMode,
-			OAuthClientID:        cfg.Exposure.Tailnet.MobileOAuthClientID,
-			OAuthClientSecret:    cfg.Exposure.Tailnet.MobileOAuthClientSecret,
-			OAuthTailnet:         cfg.Exposure.Tailnet.MobileOAuthTailnet,
-			OAuthTags:            append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
-			AuthKeyExpirySeconds: cfg.Exposure.Tailnet.MobileAuthKeyExpirySeconds,
+			ControlURL:        cfg.Exposure.Tailnet.MobileControlURL,
+			Hostname:          cfg.Exposure.Tailnet.MobileHostname,
+			OAuthClientID:     cfg.Exposure.Tailnet.MobileOAuthClientID,
+			OAuthClientSecret: cfg.Exposure.Tailnet.MobileOAuthClientSecret,
+			OAuthTailnet:      cfg.Exposure.Tailnet.MobileOAuthTailnet,
+			OAuthTags:         append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
 		},
 	}, nil
 }

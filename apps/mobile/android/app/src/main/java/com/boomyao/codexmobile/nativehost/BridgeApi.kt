@@ -51,6 +51,7 @@ object BridgeApi {
             }
         val localAuthPage = payload.optString("localAuthPage").trim().ifEmpty { null }
         return ConnectionTargetResponse(
+            bridgeId = connection?.optString("bridgeId")?.trim()?.ifEmpty { null },
             recommendedServerEndpoint = recommendedServerEndpoint,
             authMode = if (auth?.optString("mode") == "device-token") "device-token" else "none",
             localAuthPage = localAuthPage,

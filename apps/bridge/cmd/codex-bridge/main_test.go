@@ -54,7 +54,6 @@ func TestBuildBridgeConfigUsesReleaseRuntimeDesktopWebview(t *testing.T) {
 		cfg,
 		configPath,
 		"ws://127.0.0.1:9876",
-		"",
 		runtimestore.ActivatedRuntime{DesktopWebviewRoot: releaseRoot},
 		true,
 	)
@@ -80,7 +79,6 @@ func TestBuildBridgeConfigFailsWithoutAnyDesktopWebviewBundle(t *testing.T) {
 		cfg,
 		configPath,
 		"ws://127.0.0.1:9876",
-		"",
 		runtimestore.ActivatedRuntime{},
 		false,
 	)
@@ -137,28 +135,46 @@ func TestExtractBundledDesktopWebviewRootUsesNpxAsarExtract(t *testing.T) {
 	}
 }
 
-func TestBuildStartupMobileQRMakesCompactTerminalQR(t *testing.T) {
-	payload := []byte(`{"type":"codex-mobile-enrollment","version":1,"bridgeName":"example","bridgeServerEndpoint":"ws://example.ts.net:8787","pairingCode":"12345678","tailnet":{"authKey":"tskey-auth-example-example-example"}}`)
+func TestBuildStartupMobileQRKeepsQuietZoneForScanning(t *testing.T) {
+	payload := []byte(`{"type":"codex-mobile-enrollment","bridgeName":"example","bridgeServerEndpoint":"ws://example.ts.net:8787","pairingCode":"12345678","tailnet":{"clientSecret":"oauth-client-secret","oauthClientId":"oauth-client-id","oauthTailnet":"example.ts.net","oauthTags":["tag:codex-mobile"],"loginMode":"oauth-client-secret"}}`)
 
-	compact, err := buildStartupMobileQR(payload)
+	actual, err := buildStartupMobileQR(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	defaultQR, err := qrcode.New(string(payload), qrcode.Medium)
+	expectedQR, err := qrcode.New(string(payload), qrcode.Low)
 	if err != nil {
 		t.Fatal(err)
 	}
+	expected := expectedQR.ToSmallString(false)
 
-	compactWidth, compactHeight := qrStringDimensions(compact)
-	defaultWidth, defaultHeight := qrStringDimensions(defaultQR.ToSmallString(false))
-	if compactWidth >= defaultWidth && compactHeight >= defaultHeight {
+	borderlessQR, err := qrcode.New(string(payload), qrcode.Low)
+	if err != nil {
+		t.Fatal(err)
+	}
+	borderlessQR.DisableBorder = true
+	borderless := borderlessQR.ToSmallString(false)
+
+	actualWidth, actualHeight := qrStringDimensions(actual)
+	expectedWidth, expectedHeight := qrStringDimensions(expected)
+	borderlessWidth, borderlessHeight := qrStringDimensions(borderless)
+	if actualWidth != expectedWidth || actualHeight != expectedHeight {
 		t.Fatalf(
-			"expected compact QR to shrink terminal output, got compact %dx%d vs default %dx%d",
-			compactWidth,
-			compactHeight,
-			defaultWidth,
-			defaultHeight,
+			"expected QR dimensions %dx%d with quiet zone, got %dx%d",
+			expectedWidth,
+			expectedHeight,
+			actualWidth,
+			actualHeight,
+		)
+	}
+	if actualWidth <= borderlessWidth || actualHeight <= borderlessHeight {
+		t.Fatalf(
+			"expected generated QR to keep a larger quiet zone than borderless output, got actual %dx%d vs borderless %dx%d",
+			actualWidth,
+			actualHeight,
+			borderlessWidth,
+			borderlessHeight,
 		)
 	}
 }

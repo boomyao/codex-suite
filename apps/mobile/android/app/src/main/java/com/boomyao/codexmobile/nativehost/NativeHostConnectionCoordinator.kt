@@ -1,6 +1,7 @@
 package com.boomyao.codexmobile.nativehost
 
 import android.content.Context
+import android.content.Intent
 import androidx.core.content.ContextCompat
 import com.boomyao.codexmobile.R
 import com.boomyao.codexmobile.tailnet.CodexTailnetBridge
@@ -9,6 +10,7 @@ import com.boomyao.codexmobile.tailnet.EnrollmentStore
 import com.boomyao.codexmobile.tailnet.TailnetEnrollmentPayload
 import com.boomyao.codexmobile.tailnet.TailnetStatusSnapshot
 import com.boomyao.codexmobile.tailnet.parseTailnetEnrollmentPayload
+import java.io.File
 import org.json.JSONObject
 import kotlin.concurrent.thread
 
@@ -18,6 +20,7 @@ class NativeHostConnectionCoordinator(
     private val activeProfileProvider: () -> BridgeProfile?,
     private val openBridge: (BridgeProfile) -> Unit,
     private val renderEmptyState: (String) -> Unit,
+    private val renderConnectionFailure: (String, String, String) -> Unit,
     private val setStatus: (String) -> Unit,
     private val updateConnectionProgress: (String, String, NativeHostConnectionStage, Boolean) -> Unit,
     private val syncSavedConnectionsState: () -> Unit,
@@ -58,14 +61,14 @@ class NativeHostConnectionCoordinator(
     }
 
     fun restoreTailnetRuntimeIfNeeded() {
-        val profile = activeProfileProvider() ?: return
+        val profile = activeProfileProvider() ?: profileStore.readActive() ?: return
         val enrollmentPayload = profile.tailnetEnrollmentPayload?.trim().orEmpty()
         if (enrollmentPayload.isEmpty()) {
             return
         }
         val enrollment = runCatching { parseTailnetEnrollmentPayload(enrollmentPayload) }.getOrNull() ?: return
         val snapshot = CodexTailnetBridge.status(context)
-        if (snapshot.state == "running") {
+        if (isTailnetRuntimeReady(snapshot)) {
             return
         }
         android.util.Log.i(
@@ -90,6 +93,7 @@ class NativeHostConnectionCoordinator(
                     )
                     postStatus(context.getString(R.string.native_host_status_payload_received))
                     saveBridgeProfile(
+                        bridgeId = payload.bridgeId,
                         name = payload.name,
                         endpoint = payload.serverEndpoint,
                         pairingCode = payload.pairingCode.orEmpty(),
@@ -99,6 +103,36 @@ class NativeHostConnectionCoordinator(
                 }
 
                 is EnrollmentPayload.Tailnet -> {
+                    val existingProfile =
+                        profileStore.list().firstOrNull {
+                            matchesBridgeIdentity(
+                                profile = it,
+                                bridgeId = payload.bridgeId,
+                                endpoint = payload.bridgeServerEndpoint,
+                            ) &&
+                                it.tailnetEnrollmentPayload?.trim() == payload.rawJson.trim()
+                        }
+                    if (existingProfile != null) {
+                        profileStore.setActive(existingProfile.id)
+                        syncSavedConnectionsState()
+                        postConnectionProgress(
+                            profileName = existingProfile.name,
+                            endpoint = existingProfile.serverEndpoint,
+                            stage = NativeHostConnectionStage.OPENING_WORKSPACE,
+                            requiresPairing = false,
+                        )
+                        postStatus(context.getString(R.string.native_host_status_reconnecting_session))
+                        postToMain {
+                            openBridge(existingProfile)
+                            setStatus(context.getString(R.string.native_host_status_reconnecting_session))
+                        }
+                        return
+                    }
+                    resetTailnetStateForReenrollment(
+                        bridgeId = payload.bridgeId,
+                        endpoint = payload.bridgeServerEndpoint,
+                        incomingEnrollmentPayload = payload.rawJson,
+                    )
                     postConnectionProgress(
                         profileName = payload.bridgeName,
                         endpoint = payload.bridgeServerEndpoint,
@@ -115,12 +149,9 @@ class NativeHostConnectionCoordinator(
                         requiresPairing = !payload.pairingCode.isNullOrBlank(),
                     )
                     postStatus(snapshot.message)
-                    ContextCompat.startForegroundService(
-                        context,
-                        CodexTailnetService.startIntent(context, payload.rawJson),
-                    )
                     if (payload.bridgeServerEndpoint.isNotBlank()) {
                         saveBridgeProfile(
+                            bridgeId = payload.bridgeId,
                             name = payload.bridgeName,
                             endpoint = payload.bridgeServerEndpoint,
                             pairingCode = payload.pairingCode.orEmpty(),
@@ -131,7 +162,11 @@ class NativeHostConnectionCoordinator(
                 }
             }
         } catch (error: Exception) {
-            postStatus(normalizeErrorMessage(error))
+            val message = normalizeErrorMessage(error)
+            postStatus(message)
+            postToMain {
+                renderConnectionFailure("", "", message)
+            }
         }
     }
 
@@ -144,6 +179,7 @@ class NativeHostConnectionCoordinator(
     }
 
     private fun saveBridgeProfile(
+        bridgeId: String?,
         name: String,
         endpoint: String,
         pairingCode: String,
@@ -200,17 +236,20 @@ class NativeHostConnectionCoordinator(
                     )
                 }
 
+                val resolvedBridgeId = connection.bridgeId ?: bridgeId
                 val recommendedEndpoint = BridgeApi.normalizeEndpoint(connection.recommendedServerEndpoint)
                 val existingProfile =
                     profileStore.list().firstOrNull {
-                        BridgeApi.normalizeEndpoint(it.serverEndpoint) == recommendedEndpoint &&
+                        matchesBridgeIdentity(it, resolvedBridgeId, recommendedEndpoint) &&
                             (
                                 (!tailnetEnrollmentPayload.isNullOrBlank() && it.tailnetEnrollmentPayload == tailnetEnrollmentPayload) ||
-                                    it.name == name
+                                    it.name == name ||
+                                    BridgeApi.normalizeEndpoint(it.serverEndpoint) == recommendedEndpoint
                                 )
                     }
                 val profile = BridgeProfile(
-                    id = existingProfile?.id ?: profileStore.createProfileId(name, recommendedEndpoint),
+                    id = existingProfile?.id ?: profileStore.createProfileId(name, recommendedEndpoint, resolvedBridgeId),
+                    bridgeId = resolvedBridgeId,
                     name = name,
                     serverEndpoint = recommendedEndpoint,
                     authToken = authToken,
@@ -235,7 +274,11 @@ class NativeHostConnectionCoordinator(
                 }
             } catch (error: Exception) {
                 android.util.Log.w("CodexMobile", "failed to save/open bridge profile", error)
-                postStatus(normalizeErrorMessage(error))
+                val message = normalizeErrorMessage(error)
+                postStatus(message)
+                postToMain {
+                    renderConnectionFailure(name, endpoint, message)
+                }
             }
         }
     }
@@ -309,7 +352,7 @@ class NativeHostConnectionCoordinator(
         }
 
         var snapshot = CodexTailnetBridge.status(context)
-        if (isTailnetRuntimeRunning(snapshot)) {
+        if (isTailnetRuntimeReady(snapshot)) {
             return
         }
 
@@ -321,7 +364,7 @@ class NativeHostConnectionCoordinator(
         repeat(60) {
             Thread.sleep(250L)
             snapshot = CodexTailnetBridge.status(context)
-            if (isTailnetRuntimeRunning(snapshot)) {
+            if (isTailnetRuntimeReady(snapshot)) {
                 return
             }
             if (snapshot.state == "error") {
@@ -351,6 +394,45 @@ class NativeHostConnectionCoordinator(
         }
     }
 
+    private fun resetTailnetStateForReenrollment(
+        bridgeId: String?,
+        endpoint: String,
+        incomingEnrollmentPayload: String,
+    ) {
+        val normalizedEndpoint = BridgeApi.normalizeEndpoint(endpoint)
+        if (normalizedEndpoint.isBlank()) {
+            return
+        }
+        val tailscaledState = File(context.filesDir, "codex-tailnet/tailscale/tailscaled.state")
+        if (!tailscaledState.exists()) {
+            return
+        }
+
+        val incomingPayload = incomingEnrollmentPayload.trim()
+        if (incomingPayload.isEmpty()) {
+            return
+        }
+
+        val savedPayload =
+            profileStore.list()
+                .firstOrNull { matchesBridgeIdentity(it, bridgeId, normalizedEndpoint) }
+                ?.tailnetEnrollmentPayload
+                ?.trim()
+                .orEmpty()
+        if (savedPayload.isNotEmpty() && savedPayload == incomingPayload) {
+            return
+        }
+
+        android.util.Log.i(
+            "CodexMobile",
+            "resetTailnetStateForReenrollment clearing persisted state for $normalizedEndpoint",
+        )
+        runCatching { CodexTailnetBridge.stop(context) }
+        runCatching { context.stopService(Intent(context, CodexTailnetService::class.java)) }
+        EnrollmentStore(context).clear()
+        File(context.filesDir, "codex-tailnet").deleteRecursively()
+    }
+
     private fun matchesTailnetEnrollment(
         enrollment: TailnetEnrollmentPayload,
         endpoint: String,
@@ -360,8 +442,23 @@ class NativeHostConnectionCoordinator(
         return target.isNotBlank() && enrolled.isNotBlank() && target == enrolled
     }
 
-    private fun isTailnetRuntimeRunning(snapshot: TailnetStatusSnapshot): Boolean {
-        return snapshot.state == "running"
+    private fun matchesBridgeIdentity(
+        profile: BridgeProfile,
+        bridgeId: String?,
+        endpoint: String,
+    ): Boolean {
+        val normalizedBridgeId = bridgeId?.trim().orEmpty()
+        if (normalizedBridgeId.isNotEmpty()) {
+            return profile.bridgeId?.trim() == normalizedBridgeId
+        }
+        return BridgeApi.normalizeEndpoint(profile.serverEndpoint) == BridgeApi.normalizeEndpoint(endpoint)
+    }
+
+    private fun isTailnetRuntimeReady(snapshot: TailnetStatusSnapshot): Boolean {
+        if (snapshot.state != "running") {
+            return false
+        }
+        return snapshot.localProxyUrl?.trim().isNullOrEmpty().not()
     }
 
     private fun describeTailnetState(snapshot: TailnetStatusSnapshot): String {
