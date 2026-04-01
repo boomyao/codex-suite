@@ -783,30 +783,6 @@ func prepareTailnetStartup(ctx context.Context, cfg config.Config, configPath st
 	if err := waitForLocalTailnetReady(ctx, cfg, logger); err != nil {
 		return cfg, err
 	}
-	cfg, err := maybeBootstrapTailnetMobileEnrollment(cfg, configPath, stderr, logger)
-	if err != nil {
-		return cfg, err
-	}
-	if err := validateTailnetMobileEnrollmentOAuth(ctx, cfg); err != nil {
-		repairedCfg, repaired, repairErr := maybeRepairTailnetMobileEnrollmentOAuth(ctx, cfg, configPath, stderr, logger, err)
-		if repairErr != nil {
-			return repairedCfg, repairErr
-		}
-		if !repaired {
-			return cfg, fmt.Errorf("tailnet mobile enrollment OAuth validation failed: %w", err)
-		}
-		cfg = repairedCfg
-		if err := validateTailnetMobileEnrollmentOAuth(ctx, cfg); err != nil {
-			return cfg, fmt.Errorf("tailnet mobile enrollment OAuth validation failed after reconfiguration: %w", err)
-		}
-	}
-	if logger != nil && strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID) != "" {
-		logger.Printf(
-			"%s [codex-bridge] validated tailnet mobile enrollment OAuth client %s",
-			time.Now().UTC().Format(time.RFC3339),
-			strings.TrimSpace(cfg.Exposure.Tailnet.MobileOAuthClientID),
-		)
-	}
 	return cfg, nil
 }
 

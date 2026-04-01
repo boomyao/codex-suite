@@ -9,17 +9,17 @@ This note replaces the previous assumption that `codex-mobile` should remain a R
 - Android native host
 - iOS native host
 - `WebView` container for the existing bridge UI
-- native tailnet runtime owner
+- direct bridge client
 
 The web content remains the product UI. The mobile app becomes a systems shell.
 
 ## Why
 
-- embedded tailnet runtime is already native work
-- Android requires `VpnService`
-- iOS will require `Network Extension`
+- the hard part on mobile is host integration, not reimplementing Tailscale
+- the app should connect to bridge endpoints directly over HTTP and WebSocket
+- if bridge is exposed on tailnet, the system Tailscale app should own reachability
 - QR enrollment, app lifecycle, background behavior, and permission handling are all platform-native concerns
-- keeping React Native as a thin wrapper adds another runtime without reducing the hard parts
+- keeping React Native as a thin wrapper would still add another runtime without reducing the hard parts
 
 ## Current repository direction
 
@@ -31,7 +31,7 @@ The web content remains the product UI. The mobile app becomes a systems shell.
 - `BridgeProfileStore`
 - bridge enrollment parsing
 - bridge pairing and `WebView` loading
-- embedded tailnet service remains native under `.tailnet`
+- direct bridge bootstrap and websocket transport
 
 ### iOS
 
@@ -49,7 +49,7 @@ The web content remains the product UI. The mobile app becomes a systems shell.
 - `CodexMobileHost.xcodeproj`
 - shared `CodexMobileHost` scheme
 
-The future step is to add a `Network Extension` target on top of this app project.
+The iOS app now follows the same direct bridge model as Android and does not depend on an embedded tailnet runtime.
 
 ## Electron WebView compatibility notes
 
@@ -149,23 +149,25 @@ Rule:
 - do not duplicate business logic in both preload and native host
 - prefer moving method implementations back to bridge over adding new native stubs
 
-### 6. Tailnet and local proxy
+### 6. Tailnet ownership
 
-Embedded tailnet changes how the web UI reaches the bridge.
+Tailnet may still be part of the deployment, but it should not be implemented inside the mobile app.
 
 What exists now:
 
-- native tailnet runtime lives in `apps/mobile/mobilelib`
-- Android uses a local proxy path before loading the bridge UI
+- mobile stores plain bridge profiles and connects directly to the advertised bridge endpoint
+- legacy `codex-mobile-enrollment` payloads are downgraded into normal bridge profiles for compatibility
 
 Why:
 
-- the `WebView` should talk to a stable local endpoint, while the native layer owns tailnet reachability
+- embedded tailnet added a large amount of platform-specific lifecycle, secret storage, and proxy complexity
+- system Tailscale already owns device auth, network extension/VPN integration, and tailnet reachability
 
 Rule:
 
-- keep network ownership in native code
-- keep the `WebView` unaware of tailnet details wherever possible
+- keep the mobile host unaware of tailnet implementation details
+- treat `.ts.net` and Tailscale IP endpoints as ordinary bridge addresses
+- if a user needs tailnet reachability, rely on the installed Tailscale app
 
 ### 7. Startup race handling
 
@@ -212,12 +214,12 @@ When iOS is wired up, the safest order is:
 2. Reuse bridge bootstrap hydration before first `WebView` load.
 3. Reuse websocket-backed interactive transport for Codex turns.
 4. Add only the minimum host-local RPC surface needed for startup and shell state.
-5. Add the native tailnet and local proxy layer underneath the `WebView`.
+5. Keep the mobile host on direct bridge transport and avoid reintroducing an embedded network stack.
 6. Only then address visual or gesture-specific mobile patches.
 
 ## Next steps
 
 1. Move bridge onboarding fully into native Android UI, including camera QR scan.
-2. Add a local proxy or request bridge so the `WebView` can consume embedded tailnet networking directly.
-3. Add the iOS `Network Extension` target.
-4. Keep refining the native enrollment and local proxy flow.
+2. Keep shrinking tailnet-specific code that is no longer on the native host path.
+3. Improve user-facing guidance when the system Tailscale app is required but not connected.
+4. Keep refining the native enrollment and direct bridge flow.

@@ -1,7 +1,50 @@
 package com.boomyao.codexmobile.nativehost
 
-import com.boomyao.codexmobile.tailnet.normalizedEnrollmentPayloadJson
 import org.json.JSONObject
+
+private val ENROLLMENT_WRAPPER_KEYS = listOf(
+    "payload",
+    "mobileEnrollmentPayload",
+    "enrollmentPayload",
+    "data",
+    "result",
+)
+
+private fun unwrapEnrollmentPayloadValue(candidate: Any?): JSONObject? {
+    return when (candidate) {
+        is JSONObject -> candidate
+        is String -> runCatching { JSONObject(candidate) }.getOrNull()
+        else -> null
+    }
+}
+
+private fun normalizedEnrollmentPayloadRoot(rawPayload: String): JSONObject {
+    val root = try {
+        JSONObject(rawPayload)
+    } catch (error: Exception) {
+        throw IllegalArgumentException("Enrollment payload is not valid JSON.", error)
+    }
+    var current = root
+    repeat(4) {
+        val payloadType = current.optString("type").trim()
+        if (payloadType.isNotEmpty()) {
+            return current
+        }
+        val next =
+            ENROLLMENT_WRAPPER_KEYS.firstNotNullOfOrNull { key ->
+                unwrapEnrollmentPayloadValue(current.opt(key))
+            }
+        if (next == null) {
+            return current
+        }
+        current = next
+    }
+    return current
+}
+
+private fun normalizedEnrollmentPayloadJson(rawPayload: String): String {
+    return normalizedEnrollmentPayloadRoot(rawPayload).toString()
+}
 
 private fun unsupportedEnrollmentPayloadTypeError(root: JSONObject): IllegalArgumentException {
     val payloadType = root.optString("type").trim()
@@ -33,17 +76,15 @@ object EnrollmentParser {
                 name = root.optString("name").trim().ifEmpty { "Codex Bridge" },
                 serverEndpoint = BridgeApi.normalizeEndpoint(root.optString("serverEndpoint").trim()),
                 pairingCode = root.optString("pairingCode").trim().ifEmpty { null },
-                rawJson = normalizedRawJson,
             )
 
-            "codex-mobile-enrollment" -> EnrollmentPayload.Tailnet(
+            "codex-mobile-enrollment" -> EnrollmentPayload.Bridge(
                 bridgeId = root.optString("bridgeId").trim().ifEmpty { null },
-                bridgeName = root.optString("bridgeName").trim().ifEmpty { "Codex Bridge" },
-                bridgeServerEndpoint = BridgeApi.normalizeEndpoint(
+                name = root.optString("bridgeName").trim().ifEmpty { "Codex Bridge" },
+                serverEndpoint = BridgeApi.normalizeEndpoint(
                     root.optString("bridgeServerEndpoint").trim(),
                 ),
                 pairingCode = root.optString("pairingCode").trim().ifEmpty { null },
-                rawJson = normalizedRawJson,
             )
 
             else -> throw unsupportedEnrollmentPayloadTypeError(root)

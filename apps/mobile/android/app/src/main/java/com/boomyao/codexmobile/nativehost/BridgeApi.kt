@@ -4,11 +4,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
-import java.net.Inet4Address
-import java.net.Inet6Address
 import java.net.URL
-import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 
 object BridgeApi {
     private const val DEFAULT_TIMEOUT_MS = 10_000
@@ -155,36 +151,6 @@ object BridgeApi {
                 ready = false,
                 errorMessage = error.message?.trim().orEmpty().ifEmpty { null },
             )
-        }
-    }
-
-    fun isLikelyTailnetEndpoint(endpoint: String): Boolean {
-        val normalized = normalizeEndpoint(endpoint)
-        if (normalized.isEmpty()) {
-            return false
-        }
-        val host = runCatching {
-            URL(deriveServerHttpBaseUrl(normalized)).host.trim().lowercase()
-        }.getOrNull().orEmpty()
-        if (host.isEmpty()) {
-            return false
-        }
-        if (host.endsWith(".ts.net")) {
-            return true
-        }
-        val decodedHost = runCatching {
-            URLDecoder.decode(host, StandardCharsets.UTF_8.name())
-        }.getOrDefault(host)
-        val parsedIp = runCatching {
-            java.net.InetAddress.getByName(decodedHost)
-        }.getOrNull() ?: return false
-        return when (parsedIp) {
-            is Inet4Address -> {
-                val bytes = parsedIp.address
-                bytes.size == 4 && bytes[0].toInt() and 0xff == 100 && (bytes[1].toInt() and 0xc0) == 64
-            }
-            is Inet6Address -> decodedHost.startsWith("fd7a:115c:a1e0:", ignoreCase = true)
-            else -> false
         }
     }
 

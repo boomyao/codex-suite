@@ -2,11 +2,8 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
-def generatedJniRoot = new File(buildDir, "generated/jniLibs")
 
 android {
-    ndkVersion rootProject.ext.ndkVersion
-
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
@@ -17,9 +14,6 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0.0"
-        ndk {
-            abiFilters 'arm64-v8a', 'x86_64'
-        }
     }
     signingConfigs {
         debug {
@@ -49,17 +43,6 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
-    }
-    sourceSets {
-        main {
-            jniLibs.srcDirs += [generatedJniRoot.absolutePath]
-        }
-    }
-    externalNativeBuild {
-        cmake {
-            path file('src/main/cpp/CMakeLists.txt')
-            version '3.22.1'
-        }
     }
 }
 
@@ -95,11 +78,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 
-tasks.register('buildGoSharedLib', Exec) {
-    workingDir rootProject.projectDir.parentFile
-    commandLine 'bash', './scripts/build_android_bridge.sh'
-}
-
 tasks.register('generateAndroidIconAssets', Exec) {
     workingDir rootProject.projectDir.parentFile
     commandLine 'bash', './scripts/generate_android_icon_assets.sh'
@@ -107,5 +85,4 @@ tasks.register('generateAndroidIconAssets', Exec) {
 
 tasks.named('preBuild').configure {
     dependsOn(tasks.named('generateAndroidIconAssets'))
-    dependsOn(tasks.named('buildGoSharedLib'))
 }

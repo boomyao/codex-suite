@@ -593,7 +593,7 @@ class NativeHostActivity : AppCompatActivity() {
                         .put("name", profile.name)
                         .put("serverEndpoint", profile.serverEndpoint)
                         .put("active", profile.id == activeProfileId)
-                        .put("tailnetManaged", !profile.tailnetEnrollmentPayload.isNullOrBlank()),
+                        .put("tailnetManaged", false),
                 )
             }
         }
@@ -675,8 +675,6 @@ class NativeHostActivity : AppCompatActivity() {
     private fun summarizeWorkspaceError(message: String): String {
         val normalized = message.trim()
         return when {
-            normalized.contains("tailnet runtime is not running", ignoreCase = true) ->
-                "The secure link on this phone has stopped."
             normalized.contains("expired", ignoreCase = true) ->
                 "This setup code expired before the workspace opened."
             normalized.isBlank() ->
@@ -915,7 +913,6 @@ class NativeHostActivity : AppCompatActivity() {
         val steps =
             buildList {
                 add(NativeHostConnectionStage.PAYLOAD_RECEIVED to getString(R.string.native_host_progress_step_payload))
-                add(NativeHostConnectionStage.STARTING_TAILNET to getString(R.string.native_host_progress_step_tailnet))
                 if (requiresPairing) {
                     add(NativeHostConnectionStage.PAIRING_DEVICE to getString(R.string.native_host_progress_step_pairing))
                 }
@@ -1107,38 +1104,6 @@ class NativeHostActivity : AppCompatActivity() {
             ShellChromeState.ERROR,
             -> openConnectionSheet()
         }
-    }
-
-    private fun isTailnetConnected(snapshot: com.boomyao.codexmobile.tailnet.TailnetStatusSnapshot): Boolean {
-        val backendState = snapshot.auth?.backendState?.trim()
-        return snapshot.state == "running" && backendState == "Running"
-    }
-
-    private fun isTailnetRuntimeRunning(snapshot: com.boomyao.codexmobile.tailnet.TailnetStatusSnapshot): Boolean {
-        return snapshot.state == "running"
-    }
-
-    private fun describeTailnetState(snapshot: com.boomyao.codexmobile.tailnet.TailnetStatusSnapshot): String {
-        val auth = snapshot.auth
-        val parts = mutableListOf<String>()
-        val primary = snapshot.message.trim()
-        if (primary.isNotEmpty()) {
-            parts += primary
-        }
-        val backendState = auth?.backendState?.trim().orEmpty()
-        when {
-            auth == null -> parts += "Tailnet auth state is unavailable."
-            auth.needsLogin -> parts += "Tailnet backend state: NeedsLogin."
-            auth.needsMachineAuth -> parts += "Tailnet backend state: NeedsMachineAuth."
-            backendState.isNotEmpty() && backendState != "Running" -> parts += "Tailnet backend state: $backendState."
-        }
-        auth?.tailnet?.takeIf { it.isNotBlank() }?.let { parts += "Tailnet: $it." }
-        auth?.selfDnsName?.takeIf { it.isNotBlank() }?.let { parts += "Node: $it." }
-        if (!auth?.tailscaleIps.isNullOrEmpty()) {
-            parts += "IPs: ${auth?.tailscaleIps?.joinToString(", ")}."
-        }
-        auth?.authUrl?.takeIf { it.isNotBlank() }?.let { parts += "Auth URL: $it" }
-        return parts.joinToString(" ").trim()
     }
 
     private fun configureBridgeCookies(

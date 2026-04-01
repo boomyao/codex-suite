@@ -136,7 +136,7 @@ func TestExtractBundledDesktopWebviewRootUsesNpxAsarExtract(t *testing.T) {
 }
 
 func TestBuildStartupMobileQRKeepsQuietZoneForScanning(t *testing.T) {
-	payload := []byte(`{"type":"codex-mobile-enrollment","bridgeName":"example","bridgeServerEndpoint":"ws://example.ts.net:8787","pairingCode":"12345678","tailnet":{"clientSecret":"oauth-client-secret","oauthClientId":"oauth-client-id","oauthTailnet":"example.ts.net","oauthTags":["tag:codex-mobile"],"loginMode":"oauth-client-secret"}}`)
+	payload := []byte(`{"type":"codex-mobile-bridge","version":1,"name":"example","serverEndpoint":"ws://example.ts.net:8787","pairingCode":"12345678"}`)
 
 	actual, err := buildStartupMobileQR(payload)
 	if err != nil {

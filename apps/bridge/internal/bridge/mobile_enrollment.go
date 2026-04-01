@@ -91,36 +91,6 @@ func (b *Bridge) buildMobileEnrollmentPayload(
 		return nil, fmt.Errorf("no reachable bridge endpoint is available for mobile enrollment")
 	}
 
-	useTailnetEnrollment := b.tailnetEnrollmentAvailable(exposureStatus)
-	if useTailnetEnrollment {
-		payload := map[string]any{
-			"type":                 "codex-mobile-enrollment",
-			"bridgeId":             strings.TrimSpace(connectionStringValue(connection, "bridgeId")),
-			"bridgeName":           deriveEnrollmentBridgeName(endpoint),
-			"bridgeServerEndpoint": strings.TrimSpace(endpoint),
-			"tailnet": map[string]any{
-				"clientSecret":  strings.TrimSpace(b.config.MobileEnrollment.OAuthClientSecret),
-				"oauthClientId": strings.TrimSpace(b.config.MobileEnrollment.OAuthClientID),
-				"oauthTailnet":  strings.TrimSpace(b.config.MobileEnrollment.OAuthTailnet),
-				"oauthTags":     append([]string{}, b.config.MobileEnrollment.OAuthTags...),
-				"loginMode":     "oauth-client-secret",
-			},
-		}
-		if controlURL := strings.TrimSpace(b.config.MobileEnrollment.ControlURL); controlURL != "" {
-			payload["tailnet"].(map[string]any)["controlUrl"] = controlURL
-		}
-		if hostname := strings.TrimSpace(b.config.MobileEnrollment.Hostname); hostname != "" {
-			payload["tailnet"].(map[string]any)["hostname"] = hostname
-		}
-		if code := strings.TrimSpace(pairingCode); code != "" {
-			payload["pairingCode"] = code
-		}
-		return payload, nil
-	}
-	if exposureStatus.Mode == "tailnet" {
-		return nil, fmt.Errorf("tailnet mobile enrollment requires OAuth client credentials on the bridge host")
-	}
-
 	payload := map[string]any{
 		"type":           "codex-mobile-bridge",
 		"version":        1,
@@ -141,16 +111,6 @@ func connectionStringValue(connection map[string]any, key string) string {
 	}
 	value, _ := connection[key].(string)
 	return strings.TrimSpace(value)
-}
-
-func (b *Bridge) tailnetEnrollmentAvailable(exposureStatus ExposureStatus) bool {
-	if b == nil || !b.config.MobileEnrollment.hasOAuthProvisioner() {
-		return false
-	}
-	if exposureStatus.Mode == "tailnet" && !exposureStatus.Ready {
-		return false
-	}
-	return true
 }
 
 func deriveEnrollmentBridgeName(endpoint string) string {

@@ -321,7 +321,6 @@ class NativeHostConnectionSheetController(
         return currentStatusMessageProvider().ifBlank {
             when (currentConnectionStageProvider()) {
                 NativeHostConnectionStage.PAYLOAD_RECEIVED -> context.getString(R.string.native_host_status_payload_received)
-                NativeHostConnectionStage.STARTING_TAILNET -> context.getString(R.string.native_host_status_preparing_connection)
                 NativeHostConnectionStage.PAIRING_DEVICE -> context.getString(R.string.native_host_status_pairing_device)
                 NativeHostConnectionStage.OPENING_WORKSPACE, null -> context.getString(R.string.native_host_status_opening_workspace)
             }
@@ -363,8 +362,6 @@ class NativeHostConnectionSheetController(
     private fun summarizeWorkspaceError(message: String): String {
         val normalized = message.trim()
         return when {
-            normalized.contains("tailnet runtime is not running", ignoreCase = true) ->
-                "The secure link on this phone has stopped."
             normalized.contains("invalid key", ignoreCase = true) ||
                 normalized.contains("not valid", ignoreCase = true) ||
                 normalized.contains("fresh enrollment qr", ignoreCase = true) ||

@@ -8,7 +8,6 @@ data class BridgeProfile(
     val name: String,
     val serverEndpoint: String,
     val authToken: String?,
-    val tailnetEnrollmentPayload: String? = null,
     val lastUsedAtMillis: Long? = null,
 )
 
@@ -50,14 +49,5 @@ sealed class EnrollmentPayload {
         val name: String,
         val serverEndpoint: String,
         val pairingCode: String?,
-        val rawJson: String,
-    ) : EnrollmentPayload()
-
-    data class Tailnet(
-        val bridgeId: String?,
-        val bridgeName: String,
-        val bridgeServerEndpoint: String,
-        val pairingCode: String?,
-        val rawJson: String,
     ) : EnrollmentPayload()
 }

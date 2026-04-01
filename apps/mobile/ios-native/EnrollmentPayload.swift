@@ -1,84 +1,80 @@
 import Foundation
 
-enum EnrollmentPayload {
-    case bridge(name: String, serverEndpoint: String, pairingCode: String?, rawJSON: String)
-    case tailnet(bridgeName: String, bridgeServerEndpoint: String, pairingCode: String?, rawJSON: String)
+enum EnrollmentPayload: Equatable {
+    case bridge(bridgeID: String?, name: String, serverEndpoint: String, pairingCode: String?)
+}
+
+private let enrollmentWrapperKeys = [
+    "payload",
+    "mobileEnrollmentPayload",
+    "enrollmentPayload",
+    "data",
+    "result",
+]
+
+private func unwrapEnrollmentPayloadValue(_ candidate: Any?) -> JSONDictionary? {
+    if let object = candidate as? JSONDictionary {
+        return object
+    }
+    guard let text = candidate as? String,
+          let data = text.data(using: .utf8),
+          let object = try? jsonObject(from: data) else {
+        return nil
+    }
+    return object
+}
+
+private func normalizedEnrollmentPayloadObject(_ rawPayload: String) throws -> JSONDictionary {
+    guard let data = rawPayload.data(using: .utf8) else {
+        throw NativeHostBridgeError.invalidPayload("Enrollment payload is not valid JSON.")
+    }
+    var current = try jsonObject(from: data)
+    for _ in 0..<4 {
+        let payloadType = (current["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !payloadType.isEmpty {
+            return current
+        }
+        guard let next = enrollmentWrapperKeys.compactMap({ unwrapEnrollmentPayloadValue(current[$0]) }).first else {
+            return current
+        }
+        current = next
+    }
+    return current
+}
+
+private func normalizedEnrollmentPayloadJSON(_ rawPayload: String) throws -> String {
+    jsonEncodedString(try normalizedEnrollmentPayloadObject(rawPayload))
 }
 
 enum EnrollmentParser {
     static func parse(rawJSON: String) throws -> EnrollmentPayload {
-        let data = Data(rawJSON.utf8)
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        let normalizedObject = try normalizePayloadObject(object)
-        let type = (normalizedObject["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let normalizedRawJSON = try normalizedJSONString(from: normalizedObject)
+        let normalizedRawJSON = try normalizedEnrollmentPayloadJSON(rawJSON)
+        let object = try normalizedEnrollmentPayloadObject(normalizedRawJSON)
+        let type = (object["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         switch type {
         case "codex-mobile-bridge":
             return .bridge(
-                name: ((normalizedObject["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? "Codex Bridge",
-                serverEndpoint: ((normalizedObject["serverEndpoint"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                pairingCode: ((normalizedObject["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 },
-                rawJSON: normalizedRawJSON
+                bridgeID: (object["bridgeId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                name: (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Codex Bridge",
+                serverEndpoint: BridgeAPI.normalizeEndpoint((object["serverEndpoint"] as? String) ?? ""),
+                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
         case "codex-mobile-enrollment":
-            return .tailnet(
-                bridgeName: ((normalizedObject["bridgeName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? "Codex Bridge",
-                bridgeServerEndpoint: ((normalizedObject["bridgeServerEndpoint"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-                pairingCode: ((normalizedObject["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 },
-                rawJSON: normalizedRawJSON
+            return .bridge(
+                bridgeID: (object["bridgeId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                name: (object["bridgeName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Codex Bridge",
+                serverEndpoint: BridgeAPI.normalizeEndpoint((object["bridgeServerEndpoint"] as? String) ?? ""),
+                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
         default:
-            throw NSError(domain: "CodexMobileHost", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: unsupportedPayloadMessage(for: normalizedObject)
-            ])
+            throw NativeHostBridgeError.invalidPayload(unsupportedPayloadMessage(for: object, type: type))
         }
     }
 
-    private static func normalizePayloadObject(_ object: [String: Any]) throws -> [String: Any] {
-        let wrapperKeys = ["payload", "mobileEnrollmentPayload", "enrollmentPayload", "data", "result"]
-        var current = object
-        for _ in 0..<4 {
-            let type = (current["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !type.isEmpty {
-                return current
-            }
-            var next: [String: Any]?
-            for key in wrapperKeys {
-                if let nested = current[key] as? [String: Any] {
-                    next = nested
-                    break
-                }
-                if let nestedJSON = current[key] as? String {
-                    let nestedData = Data(nestedJSON.utf8)
-                    if let nested = try? JSONSerialization.jsonObject(with: nestedData) as? [String: Any] {
-                        next = nested
-                        break
-                    }
-                }
-            }
-            guard let next else {
-                return current
-            }
-            current = next
-        }
-        return current
-    }
-
-    private static func normalizedJSONString(from object: [String: Any]) throws -> String {
-        let data = try JSONSerialization.data(withJSONObject: object)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw NSError(domain: "CodexMobileHost", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "Enrollment payload is not valid JSON."
-            ])
-        }
-        return json
-    }
-
-    private static func unsupportedPayloadMessage(for object: [String: Any]) -> String {
-        let type = (object["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    private static func unsupportedPayloadMessage(for object: JSONDictionary, type: String) -> String {
         let typeDescription = type.isEmpty ? "missing" : type
-        let keysDescription = object.keys.sorted().joined(separator: ",")
-        return "Unsupported enrollment payload type (\(typeDescription)). Top-level keys: \(keysDescription.isEmpty ? "<none>" : keysDescription)."
+        let keysDescription = object.keys.sorted().joined(separator: ",").isEmpty ? "<none>" : object.keys.sorted().joined(separator: ",")
+        return "Unsupported enrollment payload type (\(typeDescription)). Top-level keys: \(keysDescription)."
     }
 }
