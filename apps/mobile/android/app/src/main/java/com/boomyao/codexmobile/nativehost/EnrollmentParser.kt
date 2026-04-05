@@ -76,6 +76,7 @@ object EnrollmentParser {
                 name = root.optString("name").trim().ifEmpty { "Codex Bridge" },
                 serverEndpoint = BridgeApi.normalizeEndpoint(root.optString("serverEndpoint").trim()),
                 pairingCode = root.optString("pairingCode").trim().ifEmpty { null },
+                libp2pPeerId = root.optString("libp2pPeerId").trim().ifEmpty { null },
             )
 
             "codex-mobile-enrollment" -> EnrollmentPayload.Bridge(
@@ -85,6 +86,7 @@ object EnrollmentParser {
                     root.optString("bridgeServerEndpoint").trim(),
                 ),
                 pairingCode = root.optString("pairingCode").trim().ifEmpty { null },
+                libp2pPeerId = root.optString("libp2pPeerId").trim().ifEmpty { null },
             )
 
             else -> throw unsupportedEnrollmentPayloadTypeError(root)

@@ -269,9 +269,9 @@ final class NativeHostModel: ObservableObject {
 
         do {
             switch try EnrollmentParser.parse(rawJSON: trimmed) {
-            case let .bridge(bridgeID, name, serverEndpoint, pairingCode):
+            case let .bridge(bridgeID, name, serverEndpoint, pairingCode, libp2pPeerID):
                 NSLog("CodexMobile importEnrollment type=bridge endpoint=%@", serverEndpoint)
-                NativeHostDebugLog.write("import type=bridge bridgeID=\(bridgeID ?? "<nil>") endpoint=\(serverEndpoint) pairing=\(pairingCode != nil)")
+                NativeHostDebugLog.write("import type=bridge bridgeID=\(bridgeID ?? "<nil>") endpoint=\(serverEndpoint) pairing=\(pairingCode != nil) libp2p=\(libp2pPeerID ?? "<nil>")")
                 updateConnectionProgress(
                     bridgeID: bridgeID,
                     profileName: name,
@@ -286,7 +286,8 @@ final class NativeHostModel: ObservableObject {
                         name: name,
                         endpoint: serverEndpoint,
                         pairingCode: pairingCode ?? "",
-                        existingAuthToken: nil
+                        existingAuthToken: nil,
+                        libp2pPeerID: libp2pPeerID
                     )
                 }
             }
@@ -307,7 +308,8 @@ final class NativeHostModel: ObservableObject {
         name: String,
         endpoint: String,
         pairingCode: String,
-        existingAuthToken: String?
+        existingAuthToken: String?,
+        libp2pPeerID: String? = nil
     ) async {
         do {
             let normalizedEndpoint = BridgeAPI.normalizeEndpoint(endpoint)
@@ -376,7 +378,8 @@ final class NativeHostModel: ObservableObject {
                 name: name,
                 serverEndpoint: recommendedEndpoint,
                 authToken: authToken,
-                lastUsedAtMilliseconds: nil
+                lastUsedAtMilliseconds: nil,
+                libp2pPeerID: libp2pPeerID
             )
             profileStore.write(profile)
             refreshProfiles()

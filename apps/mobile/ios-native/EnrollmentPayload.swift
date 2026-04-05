@@ -1,7 +1,7 @@
 import Foundation
 
 enum EnrollmentPayload: Equatable {
-    case bridge(bridgeID: String?, name: String, serverEndpoint: String, pairingCode: String?)
+    case bridge(bridgeID: String?, name: String, serverEndpoint: String, pairingCode: String?, libp2pPeerID: String?)
 }
 
 private let enrollmentWrapperKeys = [
@@ -58,14 +58,16 @@ enum EnrollmentParser {
                 bridgeID: (object["bridgeId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
                 name: (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Codex Bridge",
                 serverEndpoint: BridgeAPI.normalizeEndpoint((object["serverEndpoint"] as? String) ?? ""),
-                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                libp2pPeerID: (object["libp2pPeerId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
         case "codex-mobile-enrollment":
             return .bridge(
                 bridgeID: (object["bridgeId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
                 name: (object["bridgeName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Codex Bridge",
                 serverEndpoint: BridgeAPI.normalizeEndpoint((object["bridgeServerEndpoint"] as? String) ?? ""),
-                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+                pairingCode: (object["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+                libp2pPeerID: (object["libp2pPeerId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
         default:
             throw NativeHostBridgeError.invalidPayload(unsupportedPayloadMessage(for: object, type: type))

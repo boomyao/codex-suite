@@ -57,6 +57,7 @@ class NativeHostConnectionCoordinator(
                         endpoint = payload.serverEndpoint,
                         pairingCode = payload.pairingCode.orEmpty(),
                         existingAuthToken = null,
+                        libp2pPeerId = payload.libp2pPeerId,
                     )
                 }
             }
@@ -70,6 +71,16 @@ class NativeHostConnectionCoordinator(
     }
 
     fun resolveBridgeLoadTarget(profile: BridgeProfile): BridgeLoadTarget {
+        // When a libp2p peer ID is available, the mobile app should start the
+        // mobileproxy library (built with gomobile) to create a local tunnel.
+        // The proxy provides a 127.0.0.1 base URL that this app can use
+        // with the existing OkHttp / WebSocket client — no protocol changes.
+        //
+        // Usage:
+        //   val proxy = Mobileproxy.startProxy(profile.libp2pPeerId, "")
+        //   return BridgeLoadTarget(baseUrl = proxy.httpBaseURL(), usesLocalProxy = true)
+        //
+        // For now, fall back to direct HTTP if the proxy library is not linked.
         return resolveBridgeLoadTarget(profile.serverEndpoint)
     }
 
@@ -79,6 +90,7 @@ class NativeHostConnectionCoordinator(
         endpoint: String,
         pairingCode: String,
         existingAuthToken: String?,
+        libp2pPeerId: String? = null,
     ) {
         postStatus(context.getString(R.string.native_host_status_preparing_connection))
         thread {
@@ -142,6 +154,7 @@ class NativeHostConnectionCoordinator(
                     name = name,
                     serverEndpoint = recommendedEndpoint,
                     authToken = authToken,
+                    libp2pPeerId = libp2pPeerId,
                 )
                 profileStore.write(profile)
                 syncSavedConnectionsState()

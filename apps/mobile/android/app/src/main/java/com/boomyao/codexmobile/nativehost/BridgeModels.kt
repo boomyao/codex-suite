@@ -9,6 +9,7 @@ data class BridgeProfile(
     val serverEndpoint: String,
     val authToken: String?,
     val lastUsedAtMillis: Long? = null,
+    val libp2pPeerId: String? = null,
 )
 
 data class ConnectionTargetResponse(
@@ -49,5 +50,6 @@ sealed class EnrollmentPayload {
         val name: String,
         val serverEndpoint: String,
         val pairingCode: String?,
+        val libp2pPeerId: String? = null,
     ) : EnrollmentPayload()
 }

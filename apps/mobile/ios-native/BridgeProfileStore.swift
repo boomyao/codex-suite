@@ -123,7 +123,8 @@ final class BridgeProfileStore {
                 name: (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? endpoint,
                 serverEndpoint: endpoint,
                 authToken: (item["authToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                lastUsedAtMilliseconds: (item["lastUsedAtMillis"] as? Int64) ?? (item["lastUsedAtMillis"] as? Int).map(Int64.init)
+                lastUsedAtMilliseconds: (item["lastUsedAtMillis"] as? Int64) ?? (item["lastUsedAtMillis"] as? Int).map(Int64.init),
+                libp2pPeerID: (item["libp2pPeerId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
             )
         }
         return ParsedProfiles(profiles: profiles, mutated: mutated)
@@ -148,6 +149,7 @@ final class BridgeProfileStore {
                 "serverEndpoint": profile.serverEndpoint,
                 "authToken": profile.authToken as Any,
                 "lastUsedAtMillis": profile.lastUsedAtMilliseconds as Any,
+                "libp2pPeerId": profile.libp2pPeerID as Any,
             ] as JSONDictionary
         }
         defaults.set(jsonEncodedString(serializedProfiles), forKey: preferencesName)

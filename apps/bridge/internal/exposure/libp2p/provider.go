@@ -6,8 +6,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -52,9 +50,7 @@ type Config struct {
 	// EnableMDNS enables mDNS discovery for LAN peers.
 	EnableMDNS bool
 
-	// ProxyListenPort is the local TCP port for the HTTP/WS proxy that
-	// tunnels traffic from libp2p peers to the gateway. If 0 (default),
-	// a random available port is chosen.
+	// ProxyListenPort is unused (kept for config compatibility).
 	ProxyListenPort int
 
 	Logger *log.Logger
@@ -62,14 +58,14 @@ type Config struct {
 
 // Provider implements exposure.Provider using libp2p for decentralized
 // peer-to-peer connectivity. It creates a libp2p node, joins the DHT for
-// discovery, and opens two stream-based protocol handlers that proxy
-// HTTP and WebSocket traffic to the local bridge gateway.
+// discovery, and registers stream handlers that proxy HTTP and WebSocket
+// traffic to the local bridge gateway.
 //
-// For clients that don't have a native libp2p stack (e.g. mobile apps),
-// the provider also starts a local TCP proxy server. Remote peers that
-// connect via libp2p get their traffic tunneled through this local proxy
-// to the gateway. The exposure session reports standard http:// and ws://
-// URLs so existing clients work without changes.
+// The exposure session's ID is the libp2p peer ID. Mobile clients use the
+// mobileproxy library (built with gomobile) to connect to this peer and
+// create a local HTTP proxy on the device. The ReachableHTTP/ReachableWS
+// fields report the gateway's own addresses, which serve as the fallback
+// for clients on the same network.
 type Provider struct {
 	config Config
 	logger *log.Logger
@@ -80,9 +76,6 @@ type Provider struct {
 	session *exposure.Session
 	target  *exposure.Target
 	cancel  context.CancelFunc
-
-	proxyListener net.Listener
-	proxyServer   *http.Server
 }
 
 func New(config Config) exposure.Provider {
@@ -171,7 +164,9 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 	}
 	p.connectBootstrapPeers(nodeCtx, h, bootstrapPeers)
 
-	// Register libp2p stream handlers that proxy to the local gateway
+	// Register libp2p stream handlers that proxy to the local gateway.
+	// When a remote peer opens a stream with protocolHTTP or protocolWS,
+	// we dial the local gateway over TCP and bidirectionally copy data.
 	h.SetStreamHandler(protocolHTTP, func(s network.Stream) {
 		p.handleStream(s, target.GatewayHTTPURL)
 	})
@@ -179,41 +174,25 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 		p.handleStream(s, target.GatewayWebSocketURL)
 	})
 
-	// Start a local TCP proxy so that existing HTTP/WS clients can reach the
-	// gateway through the libp2p network without needing a native libp2p stack.
-	proxyListener, proxyServer, proxyPort, err := p.startLocalProxy(target)
-	if err != nil {
-		kdht.Close()
-		h.Close()
-		cancel()
-		return nil, fmt.Errorf("start local proxy: %w", err)
-	}
-
 	peerID := h.ID().String()
 	addrs := h.Addrs()
 	addrStrings := make([]string, len(addrs))
 	for i, a := range addrs {
-		addrStrings[i] = a.String()
+		addrStrings[i] = fmt.Sprintf("%s/p2p/%s", a.String(), peerID)
 	}
 
 	p.logger.Printf("[libp2p] node started with peer ID: %s", peerID)
 	p.logger.Printf("[libp2p] listening on: %s", strings.Join(addrStrings, ", "))
-	p.logger.Printf("[libp2p] local proxy on port %d", proxyPort)
 
-	// Build full multiaddrs including peer ID
-	fullAddrs := make([]string, len(addrs))
-	for i, a := range addrs {
-		fullAddrs[i] = fmt.Sprintf("%s/p2p/%s", a.String(), peerID)
-	}
-
-	// Report standard HTTP/WS URLs that clients can use directly.
-	// The proxy port forwards to the gateway and is reachable by any
-	// peer that has network-level access (LAN, tailnet, or libp2p relay).
+	// The session reports the gateway's own HTTP/WS URLs as reachable
+	// endpoints. These work for clients on the same network. For remote
+	// clients, the libp2pPeerId in the enrollment payload is used with
+	// the mobileproxy library to establish a P2P tunnel.
 	session := &exposure.Session{
 		ID:            peerID,
 		Provider:      "libp2p",
-		ReachableHTTP: fmt.Sprintf("http://0.0.0.0:%d", proxyPort),
-		ReachableWS:   fmt.Sprintf("ws://0.0.0.0:%d", proxyPort),
+		ReachableHTTP: target.GatewayHTTPURL,
+		ReachableWS:   target.GatewayWebSocketURL,
 		Status:        "ready",
 	}
 
@@ -222,8 +201,6 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 	p.dht = kdht
 	p.session = session
 	p.cancel = cancel
-	p.proxyListener = proxyListener
-	p.proxyServer = proxyServer
 	p.mu.Unlock()
 
 	go func() {
@@ -275,11 +252,6 @@ func (p *Provider) cleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.proxyServer != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		p.proxyServer.Shutdown(shutdownCtx)
-		shutdownCancel()
-	}
 	if p.dht != nil {
 		p.dht.Close()
 		p.dht = nil
@@ -361,34 +333,6 @@ func (p *Provider) handleStream(s network.Stream, targetURL string) {
 	<-done
 }
 
-// startLocalProxy starts a local HTTP reverse proxy that forwards requests
-// to the bridge gateway. This gives standard HTTP/WS clients a way to reach
-// the bridge without needing a native libp2p implementation.
-func (p *Provider) startLocalProxy(target exposure.Target) (net.Listener, *http.Server, int, error) {
-	listenAddr := fmt.Sprintf("0.0.0.0:%d", p.config.ProxyListenPort)
-	listener, err := net.Listen("tcp", listenAddr)
-	if err != nil {
-		return nil, nil, 0, fmt.Errorf("listen on %s: %w", listenAddr, err)
-	}
-
-	port := listener.Addr().(*net.TCPAddr).Port
-
-	proxy, err := buildReverseProxy(target.GatewayHTTPURL)
-	if err != nil {
-		listener.Close()
-		return nil, nil, 0, err
-	}
-
-	srv := &http.Server{Handler: proxy}
-	go func() {
-		if srvErr := srv.Serve(listener); srvErr != nil && srvErr != http.ErrServerClosed {
-			p.logger.Printf("[libp2p] local proxy server error: %v", srvErr)
-		}
-	}()
-
-	return listener, srv, port, nil
-}
-
 func (p *Provider) connectBootstrapPeers(ctx context.Context, h host.Host, peers []string) {
 	for _, addr := range peers {
 		ma, err := multiaddr.NewMultiaddr(addr)
@@ -411,24 +355,6 @@ func (p *Provider) connectBootstrapPeers(ctx context.Context, h host.Host, peers
 			}
 		}(*pi)
 	}
-}
-
-func buildReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
-	parsed, err := url.Parse(targetURL)
-	if err != nil {
-		return nil, err
-	}
-	proxy := httputil.NewSingleHostReverseProxy(parsed)
-	proxy.Transport = &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 50,
-		IdleConnTimeout:     90 * time.Second,
-	}
-	return proxy, nil
 }
 
 func defaultBootstrapPeers() []string {

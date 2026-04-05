@@ -159,6 +159,17 @@ struct BridgeProfile: Equatable, Identifiable {
     let serverEndpoint: String
     let authToken: String?
     let lastUsedAtMilliseconds: Int64?
+    let libp2pPeerID: String?
+
+    init(id: String, bridgeID: String?, name: String, serverEndpoint: String, authToken: String?, lastUsedAtMilliseconds: Int64?, libp2pPeerID: String? = nil) {
+        self.id = id
+        self.bridgeID = bridgeID
+        self.name = name
+        self.serverEndpoint = serverEndpoint
+        self.authToken = authToken
+        self.lastUsedAtMilliseconds = lastUsedAtMilliseconds
+        self.libp2pPeerID = libp2pPeerID
+    }
 }
 
 struct ConnectionTargetResponse: Equatable {

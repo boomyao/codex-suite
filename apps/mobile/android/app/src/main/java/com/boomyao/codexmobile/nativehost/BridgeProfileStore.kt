@@ -97,6 +97,7 @@ class BridgeProfileStore(context: Context) {
                             serverEndpoint = endpoint,
                             authToken = item.optString("authToken").trim().ifEmpty { null },
                             lastUsedAtMillis = item.optLong("lastUsedAtMillis").takeIf { it > 0L },
+                            libp2pPeerId = item.optString("libp2pPeerId").trim().ifEmpty { null },
                         ),
                     )
                 }
@@ -130,6 +131,7 @@ class BridgeProfileStore(context: Context) {
                             .put("serverEndpoint", profile.serverEndpoint)
                             .put("authToken", profile.authToken)
                             .put("lastUsedAtMillis", profile.lastUsedAtMillis)
+                            .put("libp2pPeerId", profile.libp2pPeerId)
                     )
                 }
             }
