@@ -405,7 +405,7 @@ func sanitizeAdvertisedWebSocketURL(rawURL string) string {
 	if !ok {
 		return ""
 	}
-	if parsed.Scheme != "ws" && parsed.Scheme != "wss" && parsed.Scheme != "libp2p+ws" {
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
 		return ""
 	}
 	return parsed.String()
@@ -416,7 +416,7 @@ func sanitizeAdvertisedHTTPURL(rawURL string) string {
 	if !ok {
 		return ""
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "libp2p" {
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return ""
 	}
 	return parsed.String()

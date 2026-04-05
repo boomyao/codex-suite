@@ -3,6 +3,7 @@ package libp2p
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,16 +17,22 @@ import (
 	libp2phost "github.com/libp2p/go-libp2p"
 	dht "github.com/libp2p/go-libp2p-kad-dht"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	gostream "github.com/libp2p/go-libp2p/p2p/net/gostream"
 	"github.com/multiformats/go-multiaddr"
 )
 
 const (
+	// protocolHTTP is the libp2p protocol ID for HTTP proxying.
+	// Remote peers open a stream with this protocol and send raw HTTP requests;
+	// the bridge forwards them to the local gateway.
 	protocolHTTP = "/codex-bridge/http/1.0.0"
-	protocolWS   = "/codex-bridge/ws/1.0.0"
+
+	// protocolWS is the libp2p protocol ID for WebSocket proxying.
+	protocolWS = "/codex-bridge/ws/1.0.0"
 )
 
+// Config holds the settings for the libp2p exposure provider.
 type Config struct {
 	// ListenAddrs are the multiaddrs the libp2p node listens on.
 	// Defaults to /ip4/0.0.0.0/tcp/0 and /ip4/0.0.0.0/udp/0/quic-v1 if empty.
@@ -45,9 +52,24 @@ type Config struct {
 	// EnableMDNS enables mDNS discovery for LAN peers.
 	EnableMDNS bool
 
+	// ProxyListenPort is the local TCP port for the HTTP/WS proxy that
+	// tunnels traffic from libp2p peers to the gateway. If 0 (default),
+	// a random available port is chosen.
+	ProxyListenPort int
+
 	Logger *log.Logger
 }
 
+// Provider implements exposure.Provider using libp2p for decentralized
+// peer-to-peer connectivity. It creates a libp2p node, joins the DHT for
+// discovery, and opens two stream-based protocol handlers that proxy
+// HTTP and WebSocket traffic to the local bridge gateway.
+//
+// For clients that don't have a native libp2p stack (e.g. mobile apps),
+// the provider also starts a local TCP proxy server. Remote peers that
+// connect via libp2p get their traffic tunneled through this local proxy
+// to the gateway. The exposure session reports standard http:// and ws://
+// URLs so existing clients work without changes.
 type Provider struct {
 	config Config
 	logger *log.Logger
@@ -59,8 +81,8 @@ type Provider struct {
 	target  *exposure.Target
 	cancel  context.CancelFunc
 
-	httpServer *http.Server
-	wsServer   *http.Server
+	proxyListener net.Listener
+	proxyServer   *http.Server
 }
 
 func New(config Config) exposure.Provider {
@@ -73,9 +95,6 @@ func New(config Config) exposure.Provider {
 			"/ip4/0.0.0.0/tcp/0",
 			"/ip4/0.0.0.0/udp/0/quic-v1",
 		}
-	}
-	if config.EnableMDNS {
-		// mDNS is enabled by default in go-libp2p when not explicitly disabled
 	}
 	return &Provider{
 		config: config,
@@ -152,54 +171,23 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 	}
 	p.connectBootstrapPeers(nodeCtx, h, bootstrapPeers)
 
-	// Set up HTTP reverse proxy over libp2p streams
-	httpProxy, err := buildReverseProxy(target.GatewayHTTPURL)
+	// Register libp2p stream handlers that proxy to the local gateway
+	h.SetStreamHandler(protocolHTTP, func(s network.Stream) {
+		p.handleStream(s, target.GatewayHTTPURL)
+	})
+	h.SetStreamHandler(protocolWS, func(s network.Stream) {
+		p.handleStream(s, target.GatewayWebSocketURL)
+	})
+
+	// Start a local TCP proxy so that existing HTTP/WS clients can reach the
+	// gateway through the libp2p network without needing a native libp2p stack.
+	proxyListener, proxyServer, proxyPort, err := p.startLocalProxy(target)
 	if err != nil {
 		kdht.Close()
 		h.Close()
 		cancel()
-		return nil, fmt.Errorf("build HTTP proxy: %w", err)
+		return nil, fmt.Errorf("start local proxy: %w", err)
 	}
-
-	wsProxy, err := buildReverseProxy(target.GatewayWebSocketURL)
-	if err != nil {
-		kdht.Close()
-		h.Close()
-		cancel()
-		return nil, fmt.Errorf("build WS proxy: %w", err)
-	}
-
-	// Create HTTP server on libp2p stream listener
-	httpListener, err := gostream.Listen(h, protocolHTTP)
-	if err != nil {
-		kdht.Close()
-		h.Close()
-		cancel()
-		return nil, fmt.Errorf("create HTTP stream listener: %w", err)
-	}
-
-	wsListener, err := gostream.Listen(h, protocolWS)
-	if err != nil {
-		httpListener.Close()
-		kdht.Close()
-		h.Close()
-		cancel()
-		return nil, fmt.Errorf("create WS stream listener: %w", err)
-	}
-
-	httpSrv := &http.Server{Handler: httpProxy}
-	wsSrv := &http.Server{Handler: wsProxy}
-
-	go func() {
-		if srvErr := httpSrv.Serve(httpListener); srvErr != nil && srvErr != http.ErrServerClosed {
-			p.logger.Printf("[libp2p] HTTP server error: %v", srvErr)
-		}
-	}()
-	go func() {
-		if srvErr := wsSrv.Serve(wsListener); srvErr != nil && srvErr != http.ErrServerClosed {
-			p.logger.Printf("[libp2p] WS server error: %v", srvErr)
-		}
-	}()
 
 	peerID := h.ID().String()
 	addrs := h.Addrs()
@@ -210,6 +198,7 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 
 	p.logger.Printf("[libp2p] node started with peer ID: %s", peerID)
 	p.logger.Printf("[libp2p] listening on: %s", strings.Join(addrStrings, ", "))
+	p.logger.Printf("[libp2p] local proxy on port %d", proxyPort)
 
 	// Build full multiaddrs including peer ID
 	fullAddrs := make([]string, len(addrs))
@@ -217,11 +206,14 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 		fullAddrs[i] = fmt.Sprintf("%s/p2p/%s", a.String(), peerID)
 	}
 
+	// Report standard HTTP/WS URLs that clients can use directly.
+	// The proxy port forwards to the gateway and is reachable by any
+	// peer that has network-level access (LAN, tailnet, or libp2p relay).
 	session := &exposure.Session{
 		ID:            peerID,
 		Provider:      "libp2p",
-		ReachableHTTP: fmt.Sprintf("libp2p://%s", peerID),
-		ReachableWS:   fmt.Sprintf("libp2p+ws://%s", peerID),
+		ReachableHTTP: fmt.Sprintf("http://0.0.0.0:%d", proxyPort),
+		ReachableWS:   fmt.Sprintf("ws://0.0.0.0:%d", proxyPort),
 		Status:        "ready",
 	}
 
@@ -230,11 +222,10 @@ func (p *Provider) startNode(ctx context.Context, target exposure.Target) (*expo
 	p.dht = kdht
 	p.session = session
 	p.cancel = cancel
-	p.httpServer = httpSrv
-	p.wsServer = wsSrv
+	p.proxyListener = proxyListener
+	p.proxyServer = proxyServer
 	p.mu.Unlock()
 
-	// Monitor context cancellation for cleanup
 	go func() {
 		<-nodeCtx.Done()
 		p.cleanup()
@@ -256,7 +247,6 @@ func (p *Provider) Status(_ context.Context) (*exposure.Session, error) {
 		}, nil
 	}
 
-	// Update addresses in case they changed (e.g. after NAT mapping)
 	if p.host != nil {
 		addrs := p.host.Addrs()
 		addrStrings := make([]string, len(addrs))
@@ -285,14 +275,9 @@ func (p *Provider) cleanup() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.httpServer != nil {
+	if p.proxyServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		p.httpServer.Shutdown(shutdownCtx)
-		shutdownCancel()
-	}
-	if p.wsServer != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		p.wsServer.Shutdown(shutdownCtx)
+		p.proxyServer.Shutdown(shutdownCtx)
 		shutdownCancel()
 	}
 	if p.dht != nil {
@@ -335,6 +320,75 @@ func (p *Provider) Multiaddrs() []string {
 	return result
 }
 
+// handleStream proxies a libp2p stream to a local gateway URL by opening
+// a raw TCP connection and copying data bidirectionally.
+func (p *Provider) handleStream(s network.Stream, targetURL string) {
+	defer s.Close()
+
+	parsed, err := url.Parse(targetURL)
+	if err != nil {
+		p.logger.Printf("[libp2p] invalid target URL %q: %v", targetURL, err)
+		return
+	}
+
+	host := parsed.Hostname()
+	port := parsed.Port()
+	if port == "" {
+		switch parsed.Scheme {
+		case "http", "ws":
+			port = "80"
+		case "https", "wss":
+			port = "443"
+		}
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
+	if err != nil {
+		p.logger.Printf("[libp2p] dial gateway %s:%s failed: %v", host, port, err)
+		return
+	}
+	defer conn.Close()
+
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(conn, s)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(s, conn)
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+// startLocalProxy starts a local HTTP reverse proxy that forwards requests
+// to the bridge gateway. This gives standard HTTP/WS clients a way to reach
+// the bridge without needing a native libp2p implementation.
+func (p *Provider) startLocalProxy(target exposure.Target) (net.Listener, *http.Server, int, error) {
+	listenAddr := fmt.Sprintf("0.0.0.0:%d", p.config.ProxyListenPort)
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("listen on %s: %w", listenAddr, err)
+	}
+
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	proxy, err := buildReverseProxy(target.GatewayHTTPURL)
+	if err != nil {
+		listener.Close()
+		return nil, nil, 0, err
+	}
+
+	srv := &http.Server{Handler: proxy}
+	go func() {
+		if srvErr := srv.Serve(listener); srvErr != nil && srvErr != http.ErrServerClosed {
+			p.logger.Printf("[libp2p] local proxy server error: %v", srvErr)
+		}
+	}()
+
+	return listener, srv, port, nil
+}
+
 func (p *Provider) connectBootstrapPeers(ctx context.Context, h host.Host, peers []string) {
 	for _, addr := range peers {
 		ma, err := multiaddr.NewMultiaddr(addr)
@@ -365,7 +419,6 @@ func buildReverseProxy(targetURL string) (*httputil.ReverseProxy, error) {
 		return nil, err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(parsed)
-	// Override the transport to use direct TCP connections to the local gateway
 	proxy.Transport = &http.Transport{
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,

@@ -78,11 +78,12 @@ type TailnetConfig struct {
 }
 
 type Libp2pConfig struct {
-	ListenAddrs    []string `json:"listenAddrs"`
-	BootstrapPeers []string `json:"bootstrapPeers"`
-	PrivateKeyPath string   `json:"privateKeyPath"`
-	EnableRelay    bool     `json:"enableRelay"`
-	EnableMDNS     bool     `json:"enableMdns"`
+	ListenAddrs     []string `json:"listenAddrs"`
+	BootstrapPeers  []string `json:"bootstrapPeers"`
+	PrivateKeyPath  string   `json:"privateKeyPath"`
+	EnableRelay     bool     `json:"enableRelay"`
+	EnableMDNS      bool     `json:"enableMdns"`
+	ProxyListenPort int      `json:"proxyListenPort"`
 }
 
 type AuthConfig struct {
@@ -147,11 +148,12 @@ func DefaultConfig() Config {
 				MobileOAuthTags:         []string{},
 			},
 			Libp2p: Libp2pConfig{
-				ListenAddrs:    []string{},
-				BootstrapPeers: []string{},
-				PrivateKeyPath: "",
-				EnableRelay:    true,
-				EnableMDNS:     true,
+				ListenAddrs:     []string{},
+				BootstrapPeers:  []string{},
+				PrivateKeyPath:  "",
+				EnableRelay:     true,
+				EnableMDNS:      true,
+				ProxyListenPort: 0,
 			},
 		},
 		Auth: AuthConfig{
@@ -291,6 +293,9 @@ func EnvConfig() map[string]any {
 	if value := envBool("CODEX_EXPOSURE_LIBP2P_ENABLE_MDNS"); value != nil {
 		libp2pEnvCfg["enableMdns"] = *value
 	}
+	if value := envInt("CODEX_EXPOSURE_LIBP2P_PROXY_LISTEN_PORT"); value != nil {
+		libp2pEnvCfg["proxyListenPort"] = *value
+	}
 	if len(libp2pEnvCfg) > 0 {
 		exposureCfg["libp2p"] = libp2pEnvCfg
 	}
@@ -384,11 +389,12 @@ func ConfigToMap(cfg Config) map[string]any {
 				"mobileOAuthTags":         append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
 			},
 			"libp2p": map[string]any{
-				"listenAddrs":    append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
-				"bootstrapPeers": append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
-				"privateKeyPath": cfg.Exposure.Libp2p.PrivateKeyPath,
-				"enableRelay":    cfg.Exposure.Libp2p.EnableRelay,
-				"enableMdns":     cfg.Exposure.Libp2p.EnableMDNS,
+				"listenAddrs":     append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
+				"bootstrapPeers":  append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
+				"privateKeyPath":  cfg.Exposure.Libp2p.PrivateKeyPath,
+				"enableRelay":     cfg.Exposure.Libp2p.EnableRelay,
+				"enableMdns":      cfg.Exposure.Libp2p.EnableMDNS,
+				"proxyListenPort": cfg.Exposure.Libp2p.ProxyListenPort,
 			},
 		},
 		"auth": map[string]any{
@@ -519,6 +525,9 @@ func NormalizeConfig(input map[string]any) (Config, error) {
 	}
 	if value, ok := libp2pCfg["enableMdns"].(bool); ok {
 		cfg.Exposure.Libp2p.EnableMDNS = value
+	}
+	if value, ok := normalizeInt(libp2pCfg["proxyListenPort"]); ok {
+		cfg.Exposure.Libp2p.ProxyListenPort = value
 	}
 
 	authCfg := mapValue(input, "auth")

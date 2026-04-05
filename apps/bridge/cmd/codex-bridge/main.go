@@ -1624,12 +1624,13 @@ func buildExposureProvider(cfg config.Config, logger *log.Logger) (exposure.Prov
 		}), nil
 	case config.ExposureModeLibp2p:
 		return exposurelibp2p.New(exposurelibp2p.Config{
-			ListenAddrs:    append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
-			BootstrapPeers: append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
-			PrivateKeyPath: cfg.Exposure.Libp2p.PrivateKeyPath,
-			EnableRelay:    cfg.Exposure.Libp2p.EnableRelay,
-			EnableMDNS:     cfg.Exposure.Libp2p.EnableMDNS,
-			Logger:         logger,
+			ListenAddrs:     append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
+			BootstrapPeers:  append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
+			PrivateKeyPath:  cfg.Exposure.Libp2p.PrivateKeyPath,
+			EnableRelay:     cfg.Exposure.Libp2p.EnableRelay,
+			EnableMDNS:      cfg.Exposure.Libp2p.EnableMDNS,
+			ProxyListenPort: cfg.Exposure.Libp2p.ProxyListenPort,
+			Logger:          logger,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported exposure mode %q", cfg.Exposure.Mode)

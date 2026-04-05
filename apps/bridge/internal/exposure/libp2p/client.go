@@ -4,27 +4,26 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"time"
 
 	libp2phost "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	gostream "github.com/libp2p/go-libp2p/p2p/net/gostream"
 	"github.com/multiformats/go-multiaddr"
 )
 
-// Dialer creates HTTP connections to a remote libp2p peer running the
-// codex-bridge protocol. This is used by clients (e.g. mobile apps) that
-// want to reach the bridge over the libp2p network.
+// Dialer creates TCP-like connections to a remote libp2p peer running the
+// codex-bridge protocol. Remote peers open streams that get proxied to the
+// bridge's local gateway, so callers can treat the resulting connection like
+// a regular net.Conn.
 type Dialer struct {
 	host   host.Host
 	peerID peer.ID
 }
 
-// NewDialer creates a new libp2p dialer that can connect to a bridge peer.
-// The peerMultiaddr should include the /p2p/<peerID> component,
-// e.g. "/ip4/1.2.3.4/tcp/4001/p2p/QmPeerID...".
+// NewDialer connects to the bridge peer identified by peerMultiaddr.
+// The address must include /p2p/<peerID>, e.g.
+// "/ip4/1.2.3.4/tcp/4001/p2p/QmPeerID...".
 func NewDialer(ctx context.Context, peerMultiaddr string) (*Dialer, error) {
 	ma, err := multiaddr.NewMultiaddr(peerMultiaddr)
 	if err != nil {
@@ -60,24 +59,23 @@ func NewDialer(ctx context.Context, peerMultiaddr string) (*Dialer, error) {
 	}, nil
 }
 
-// HTTPTransport returns an http.RoundTripper that routes requests
-// over a libp2p stream to the bridge's HTTP protocol handler.
-func (d *Dialer) HTTPTransport() http.RoundTripper {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return gostream.Dial(ctx, d.host, d.peerID, protocolHTTP)
-		},
+// DialHTTP opens a libp2p stream using the bridge HTTP protocol and returns
+// it as a net.Conn. The caller can write raw HTTP requests to this connection.
+func (d *Dialer) DialHTTP(ctx context.Context) (net.Conn, error) {
+	s, err := d.host.NewStream(ctx, d.peerID, protocolHTTP)
+	if err != nil {
+		return nil, fmt.Errorf("open HTTP stream: %w", err)
 	}
+	return &streamConn{Stream: s}, nil
 }
 
-// WSTransport returns an http.RoundTripper for WebSocket upgrade requests
-// over a libp2p stream to the bridge's WebSocket protocol handler.
-func (d *Dialer) WSTransport() http.RoundTripper {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return gostream.Dial(ctx, d.host, d.peerID, protocolWS)
-		},
+// DialWS opens a libp2p stream using the bridge WebSocket protocol.
+func (d *Dialer) DialWS(ctx context.Context) (net.Conn, error) {
+	s, err := d.host.NewStream(ctx, d.peerID, protocolWS)
+	if err != nil {
+		return nil, fmt.Errorf("open WS stream: %w", err)
 	}
+	return &streamConn{Stream: s}, nil
 }
 
 // Close shuts down the dialer's libp2p host.
