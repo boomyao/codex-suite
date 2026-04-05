@@ -23,6 +23,7 @@ class NativeHostBackendRequestRouter(
     private val rememberPendingTurnCompletion: (String?, String?) -> Unit,
     private val scheduleTurnCompletionFallback: (String, String?, BridgeLoadTarget, String?) -> Unit,
     private val reconcileThreadSnapshotIfNeeded: (String, JSONObject, BridgeLoadTarget, String?) -> Unit,
+    private val onBridgeConnectionIssue: (Throwable) -> Unit,
     private val normalizeErrorMessage: (Throwable) -> String,
 ) {
     fun handleFetchMessage(message: JSONObject) {
@@ -83,6 +84,9 @@ class NativeHostBackendRequestRouter(
                 )
             } catch (error: Exception) {
                 Log.w("CodexMobile", "fetch handler failed for $rawUrl", error)
+                if (resolveRequestMethodName(rawUrl) != null) {
+                    onBridgeConnectionIssue(error)
+                }
                 sendHostMessage(
                     buildFetchErrorResponse(
                         requestId = requestId,
@@ -180,6 +184,7 @@ class NativeHostBackendRequestRouter(
                 }
             } catch (error: Exception) {
                 Log.w("CodexMobile", "mcp response error $method id=$requestId", error)
+                onBridgeConnectionIssue(error)
                 val errorPayload = JSONObject().put("message", error.message ?: "MCP request failed.")
                 sendHostMessage(
                     JSONObject()

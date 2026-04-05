@@ -18,6 +18,7 @@
 		A1000001000000000000000A /* NativeHostBridgeRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000011000000000000000A /* NativeHostBridgeRuntime.swift */; };
 		A1000001000000000000000B /* NativeHostModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000011000000000000000B /* NativeHostModel.swift */; };
 		A1000001000000000000000C /* NativeHostScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000011000000000000000C /* NativeHostScannerView.swift */; };
+		A1000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000011000000000000000D /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +33,7 @@
 		A1000011000000000000000A /* NativeHostBridgeRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHostBridgeRuntime.swift; sourceTree = "<group>"; };
 		A1000011000000000000000B /* NativeHostModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHostModel.swift; sourceTree = "<group>"; };
 		A1000011000000000000000C /* NativeHostScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeHostScannerView.swift; sourceTree = "<group>"; };
+		A1000011000000000000000D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A10000110000000000000010 /* CodexMobileHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CodexMobileHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -68,6 +70,7 @@
 				A1000011000000000000000A /* NativeHostBridgeRuntime.swift */,
 				A1000011000000000000000B /* NativeHostModel.swift */,
 				A1000011000000000000000C /* NativeHostScannerView.swift */,
+				A1000011000000000000000D /* Assets.xcassets */,
 			);
 			name = "";
 			sourceTree = "<group>";
@@ -137,6 +140,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A1000001000000000000000D /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -224,6 +228,7 @@
 		A10000060000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -250,6 +255,7 @@
 		A10000060000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;

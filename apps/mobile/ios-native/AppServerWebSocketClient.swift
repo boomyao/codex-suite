@@ -5,6 +5,7 @@ actor AppServerWebSocketClient {
     private let headers: [String: String]
     private let onNotification: @Sendable (String, JSONDictionary) async -> Void
     private let onLog: @Sendable (String, Error?) -> Void
+    private let onDisconnect: @Sendable (Error?) -> Void
 
     private var nextRequestID = 2
     private var pendingRequests: [Int: CheckedContinuation<JSONDictionary, Error>] = [:]
@@ -12,17 +13,22 @@ actor AppServerWebSocketClient {
     private var socket: URLSessionWebSocketTask?
     private var readyTask: Task<Void, Error>?
     private var receiveLoopTask: Task<Void, Never>?
+    private var pingLoopTask: Task<Void, Never>?
+    private var closeRequested = false
+    private var disconnectNotified = false
 
     init(
         webSocketURL: URL,
         headers: [String: String],
         onNotification: @escaping @Sendable (String, JSONDictionary) async -> Void,
-        onLog: @escaping @Sendable (String, Error?) -> Void
+        onLog: @escaping @Sendable (String, Error?) -> Void,
+        onDisconnect: @escaping @Sendable (Error?) -> Void
     ) {
         self.webSocketURL = webSocketURL
         self.headers = headers
         self.onNotification = onNotification
         self.onLog = onLog
+        self.onDisconnect = onDisconnect
     }
 
     func request(method: String, params: JSONDictionary) async throws -> JSONDictionary {
@@ -47,7 +53,9 @@ actor AppServerWebSocketClient {
     }
 
     func close() async {
+        closeRequested = true
         failAll(with: NativeHostBridgeError.webSocketClosed("App server websocket closed."))
+        pingLoopTask?.cancel()
         receiveLoopTask?.cancel()
         socket?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
@@ -82,6 +90,8 @@ actor AppServerWebSocketClient {
         headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
         let socket = session.webSocketTask(with: request)
 
+        closeRequested = false
+        disconnectNotified = false
         self.session = session
         self.socket = socket
         socket.resume()
@@ -110,6 +120,10 @@ actor AppServerWebSocketClient {
             "method": "initialized",
             "params": [:],
         ])
+        pingLoopTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runPingLoop(using: socket)
+        }
     }
 
     private func sendRequestDuringConnection(id: Int, method: String, params: JSONDictionary) async throws -> JSONDictionary {
@@ -153,10 +167,34 @@ actor AppServerWebSocketClient {
                 await handleMessage(text)
             }
         } catch {
-            onLog("app server websocket failure", error)
-            failAll(with: error)
-            readyTask = nil
-            self.socket = nil
+            await handleDisconnect(error, logMessage: "app server websocket failure")
+        }
+    }
+
+    private func runPingLoop(using socket: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: 15_000_000_000)
+                try Task.checkCancellation()
+                try await sendPing(using: socket)
+            } catch is CancellationError {
+                return
+            } catch {
+                await handleDisconnect(error, logMessage: "app server websocket ping failed")
+                return
+            }
+        }
+    }
+
+    private func sendPing(using socket: URLSessionWebSocketTask) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            socket.sendPing { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            }
         }
     }
 
@@ -205,5 +243,27 @@ actor AppServerWebSocketClient {
         requests.values.forEach { continuation in
             continuation.resume(throwing: error)
         }
+    }
+
+    private func handleDisconnect(_ error: Error, logMessage: String?) async {
+        if let logMessage {
+            onLog(logMessage, error)
+        }
+        if !disconnectNotified {
+            disconnectNotified = true
+            failAll(with: error)
+        }
+        readyTask = nil
+        pingLoopTask?.cancel()
+        pingLoopTask = nil
+        receiveLoopTask?.cancel()
+        receiveLoopTask = nil
+        socket = nil
+        session?.invalidateAndCancel()
+        session = nil
+        guard !closeRequested else {
+            return
+        }
+        onDisconnect(error)
     }
 }

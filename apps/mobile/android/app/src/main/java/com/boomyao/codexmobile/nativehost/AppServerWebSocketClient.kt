@@ -17,9 +17,11 @@ class AppServerWebSocketClient(
     private val headers: Map<String, String>,
     private val onNotification: (String, JSONObject) -> Unit,
     private val onLog: (String, Throwable?) -> Unit,
+    private val onDisconnected: (Throwable?) -> Unit,
 ) : WebSocketListener() {
     private val httpClient =
         OkHttpClient.Builder()
+            .pingInterval(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .build()
     private val nextRequestId = AtomicInteger(2)
@@ -31,6 +33,12 @@ class AppServerWebSocketClient(
 
     @Volatile
     private var connectStarted = false
+
+    @Volatile
+    private var closeRequested = false
+
+    @Volatile
+    private var disconnectNotified = false
 
     fun matches(url: String, extraHeaders: Map<String, String>): Boolean {
         return webSocketUrl == url && headers == extraHeaders
@@ -54,13 +62,16 @@ class AppServerWebSocketClient(
         val currentSocket = socket ?: throw IOException("App server websocket is not connected.")
         if (!currentSocket.send(payload.toString())) {
             pendingRequests.remove(requestId)
-            throw IOException("Failed to write app server websocket request.")
+            val error = IOException("Failed to write app server websocket request.")
+            notifyDisconnected(error)
+            throw error
         }
 
         return resultFuture.get(10, TimeUnit.MINUTES)
     }
 
     fun close() {
+        closeRequested = true
         failAll(IOException("App server websocket closed."))
         socket?.close(1000, "closing")
         socket = null
@@ -106,14 +117,17 @@ class AppServerWebSocketClient(
     }
 
     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-        failAll(IOException("App server websocket closed: $code $reason"))
+        val error = IOException("App server websocket closed: $code $reason")
+        failAll(error)
         socket = null
+        notifyDisconnected(error)
     }
 
     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
         onLog("app server websocket failure", t)
         failAll(t)
         socket = null
+        notifyDisconnected(t)
     }
 
     private fun ensureConnected() {
@@ -184,5 +198,19 @@ class AppServerWebSocketClient(
             iterator.remove()
             entry.value.completeExceptionally(error)
         }
+    }
+
+    private fun notifyDisconnected(error: Throwable?) {
+        if (closeRequested || disconnectNotified) {
+            return
+        }
+
+        synchronized(this) {
+            if (closeRequested || disconnectNotified) {
+                return
+            }
+            disconnectNotified = true
+        }
+        onDisconnected(error)
     }
 }

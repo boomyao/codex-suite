@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import WebKit
 
 @MainActor
@@ -10,6 +11,7 @@ protocol NativeHostWebBridgeDelegate: AnyObject {
     func webBridgeDidFailNavigation(message: String)
     func webBridgeCurrentBaseURL() -> URL?
     func webBridgeOpenExternalURL(_ url: URL)
+    func webBridgePickOpenPanelFiles(title: String, allowsMultipleSelection: Bool) async throws -> [URL]
 }
 
 @MainActor
@@ -38,6 +40,8 @@ final class NativeHostWebBridge: NSObject {
         configuration.userContentController = controller
         configuration.defaultWebpagePreferences.preferredContentMode = .mobile
         configuration.websiteDataStore = .default()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.mediaTypesRequiringUserActionForPlayback = []
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
@@ -78,8 +82,20 @@ final class NativeHostWebBridge: NSObject {
         webView?.loadHTMLString("", baseURL: nil)
     }
 
+    func loadHTMLString(_ html: String, baseURL: URL?) {
+        pendingLoad = nil
+        makeWebView().loadHTMLString(html, baseURL: baseURL)
+    }
+
     func evaluateJavaScript(_ script: String) {
         webView?.evaluateJavaScript(script, completionHandler: nil)
+    }
+
+    func currentPresentingViewController() -> UIViewController? {
+        guard let webView else {
+            return nil
+        }
+        return webView.nearestViewController()?.topMostPresentedController()
     }
 
     func configureCookies(baseURL: URL, authToken: String?, usesLocalProxy: Bool) async {
@@ -196,6 +212,33 @@ extension NativeHostWebBridge: WKNavigationDelegate, WKUIDelegate {
             decisionHandler(.allow)
         }
     }
+
+    @available(iOS 18.4, *)
+    func webView(
+        _ webView: WKWebView,
+        runOpenPanelWith parameters: WKOpenPanelParameters,
+        initiatedByFrame frame: WKFrameInfo,
+        completionHandler: @escaping ([URL]?) -> Void
+    ) {
+        NativeHostDebugLog.write("webview-open-panel requested multiple=\(parameters.allowsMultipleSelection) directories=\(parameters.allowsDirectories)")
+        Task { @MainActor [weak self] in
+            guard let self else {
+                completionHandler(nil)
+                return
+            }
+            do {
+                let urls = try await delegate?.webBridgePickOpenPanelFiles(
+                    title: "Add Photos & Files",
+                    allowsMultipleSelection: parameters.allowsMultipleSelection
+                )
+                NativeHostDebugLog.write("webview-open-panel completed count=\(urls?.count ?? 0)")
+                completionHandler(urls)
+            } catch {
+                NativeHostDebugLog.write("webview-open-panel failed message=\((error as NSError).localizedDescription)")
+                completionHandler(nil)
+            }
+        }
+    }
 }
 
 struct CodexWebView: UIViewRepresentable {
@@ -207,5 +250,33 @@ struct CodexWebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         bridge.attach(webView: uiView)
+    }
+}
+
+extension UIView {
+    func nearestViewController() -> UIViewController? {
+        var responder: UIResponder? = self
+        while let current = responder {
+            if let controller = current as? UIViewController {
+                return controller
+            }
+            responder = current.next
+        }
+        return nil
+    }
+}
+
+extension UIViewController {
+    func topMostPresentedController() -> UIViewController {
+        if let navigationController = self as? UINavigationController {
+            return (navigationController.visibleViewController ?? navigationController).topMostPresentedController()
+        }
+        if let tabBarController = self as? UITabBarController {
+            return (tabBarController.selectedViewController ?? tabBarController).topMostPresentedController()
+        }
+        if let presentedViewController {
+            return presentedViewController.topMostPresentedController()
+        }
+        return self
     }
 }

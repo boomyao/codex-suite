@@ -8,7 +8,10 @@
   <string name="native_host_status_pairing_device">Approving this phone</string>
   <string name="native_host_status_opening_workspace">Opening your workspace</string>
   <string name="native_host_status_reconnecting_session">Trying to restore this session</string>
+  <string name="native_host_status_bridge_disconnected">Lost contact with the desktop bridge. Reconnecting.</string>
   <string name="native_host_workspace_error">Couldn’t open workspace</string>
+  <string name="native_host_workspace_reconnecting">Connection lost</string>
+  <string name="native_host_workspace_reconnecting_body">This phone lost contact with the desktop bridge. Codex Mobile will keep retrying until the bridge responds or you choose another saved session.</string>
   <string name="native_host_workspace_error_body">This session stopped before the workspace opened. Retry, choose another saved session, or scan a fresh code from desktop.</string>
   <string name="native_host_empty_title">Open your Codex workspace</string>
   <string name="native_host_empty_body">Scan the QR code from desktop to connect this phone.</string>
@@ -16,12 +19,15 @@
   <string name="native_host_connection_avatar_placeholder">C</string>
   <string name="native_host_settings_action">Settings</string>
   <string name="native_host_retry_action">Try again</string>
+  <string name="native_host_retry_now_action">Retry now</string>
   <string name="native_host_secondary_action_manage">Other sessions</string>
   <string name="native_host_hero_eyebrow_idle">Connect securely</string>
   <string name="native_host_hero_eyebrow_error">Connection needs attention</string>
+  <string name="native_host_hero_eyebrow_reconnecting">Reconnecting</string>
   <string name="native_host_state_ready">Ready</string>
   <string name="native_host_state_live">Live</string>
   <string name="native_host_state_attention">Needs attention</string>
+  <string name="native_host_state_reconnecting">Reconnecting</string>
   <string name="native_host_runtime_label_endpoint">Session address</string>
   <string name="native_host_runtime_label_saved">Saved sessions</string>
   <string name="native_host_progress_step_payload">Code received</string>

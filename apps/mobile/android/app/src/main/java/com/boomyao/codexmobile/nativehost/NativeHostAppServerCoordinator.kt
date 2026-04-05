@@ -9,6 +9,7 @@ class NativeHostAppServerCoordinator(
     private val sendHostMessage: (JSONObject) -> Unit,
     private val integrateDirectRpcResult: (String, JSONObject) -> Unit,
     private val logWarning: (String, Throwable?) -> Unit,
+    private val onConnectionLost: (Throwable?) -> Unit,
 ) {
     private val pendingTurnCompletions = ConcurrentHashMap<String, String>()
     private val activeTurnReconciliations = ConcurrentHashMap.newKeySet<String>()
@@ -118,6 +119,15 @@ class NativeHostAppServerCoordinator(
                 )
             },
             onLog = logWarning,
+            onDisconnected = { error ->
+                appServerWebSocketClient = null
+                thread(name = "codex-app-server-disconnect-probe") {
+                    val probe = BridgeApi.probeBridgeReadyByBaseUrl(loadTarget.baseUrl, authToken)
+                    if (!probe.ready) {
+                        onConnectionLost(error)
+                    }
+                }
+            },
         ).also {
             appServerWebSocketClient = it
         }

@@ -167,81 +167,68 @@ struct NativeHostScannerView: View {
 
     private var scannerOverlay: some View {
         ZStack {
-            Color.black.opacity(0.34)
+            Color.black.opacity(0.4)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 HStack {
-                    Button("Close") {
+                    Button {
                         dismiss()
                         onCancel()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(.ultraThinMaterial, in: Circle())
                     }
-                    .font(.headline)
-                    .foregroundStyle(.white)
                     Spacer()
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 18)
+                .padding(.top, 16)
 
                 Spacer()
 
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .strokeBorder(.white.opacity(0.92), lineWidth: 3)
-                    .frame(width: 280, height: 280)
-                    .overlay(alignment: .top) {
-                        VStack(spacing: 10) {
-                            Text("Scan the desktop QR code")
-                                .font(.title3.weight(.semibold))
-                                .foregroundStyle(.white)
-                            Text("Open Codex on desktop, show the mobile QR code, then point this iPad at it.")
-                                .font(.callout)
-                                .multilineTextAlignment(.center)
-                                .foregroundStyle(.white.opacity(0.84))
-                                .frame(maxWidth: 280)
-                        }
-                        .padding(.top, -120)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .strokeBorder(.white.opacity(0.6), lineWidth: 2)
+                    .frame(width: 240, height: 240)
+
+                Spacer()
+
+                VStack(spacing: 6) {
+                    if let errorMessage = coordinator.errorMessage, !errorMessage.isEmpty {
+                        Text(errorMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.white)
+                    } else {
+                        Text("Point at the desktop QR code")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
                     }
-
-                Spacer()
-
-                if let errorMessage = coordinator.errorMessage, !errorMessage.isEmpty {
-                    Text(errorMessage)
-                        .font(.callout)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 24)
-                } else {
-                    Text("The setup code will open a trusted session on this iPad.")
-                        .font(.callout)
-                        .foregroundStyle(.white.opacity(0.84))
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 24)
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 32)
             }
         }
     }
 
     private var cameraPermissionView: some View {
         ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.11, green: 0.13, blue: 0.18), Color(red: 0.03, green: 0.04, blue: 0.07)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+            Color.black
+                .ignoresSafeArea()
 
-            VStack(spacing: 18) {
-                Image(systemName: "camera.viewfinder")
-                    .font(.system(size: 46, weight: .medium))
+            VStack(spacing: 20) {
+                Image(systemName: "camera")
+                    .font(.system(size: 36, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+                Text("Camera access required")
+                    .font(.headline)
                     .foregroundStyle(.white)
-                Text("Camera access is required")
-                    .font(.title2.weight(.semibold))
-                    .foregroundStyle(.white)
-                Text("Allow camera access to scan the desktop QR code.")
-                    .font(.body)
+                Text("Allow camera access to scan the QR code.")
+                    .font(.subheadline)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(maxWidth: 340)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(maxWidth: 280)
 
                 VStack(spacing: 12) {
                     Button("Open Settings") {
@@ -250,13 +237,14 @@ struct NativeHostScannerView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
+                    .tint(.white)
+                    .foregroundStyle(.black)
 
                     Button("Close") {
                         dismiss()
                         onCancel()
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.8))
+                    .foregroundStyle(.white.opacity(0.5))
                 }
             }
             .padding(24)

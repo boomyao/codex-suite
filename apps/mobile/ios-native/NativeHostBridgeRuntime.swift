@@ -7,7 +7,9 @@ protocol NativeHostBridgeRuntimeDelegate: AnyObject {
     func runtimeResolveBridgeLoadTarget(for profile: BridgeProfile) async throws -> BridgeLoadTarget
     func runtimeSetStatus(_ message: String)
     func runtimeNormalizeError(_ error: Error) -> String
+    func runtimeHandleBridgeConnectionIssue(_ error: Error)
     func runtimeOpenExternalURL(_ url: URL)
+    func runtimePickFiles(title: String) async throws -> NativeHostAttachmentSelection
 }
 
 @MainActor
@@ -56,6 +58,10 @@ final class NativeHostBridgeRuntime {
         Task {
             await appServerCoordinator.reset()
         }
+    }
+
+    func handleBridgeConnectionIssue(_ error: Error) {
+        delegate?.runtimeHandleBridgeConnectionIssue(error)
     }
 
     func syncSavedConnectionsState(profiles: [BridgeProfile], activeProfileID: String?) {
@@ -147,9 +153,15 @@ final class NativeHostBridgeRuntime {
 
         switch kind {
         case "preload-ready":
+            NativeHostDebugLog.write("preload-ready")
             if let profile = delegate?.runtimeActiveProfile {
                 delegate?.runtimeSetStatus("Connected to \(profile.serverEndpoint)")
             }
+        case "console":
+            guard let payload = envelope["payload"] as? JSONDictionary else {
+                return
+            }
+            NativeHostDebugLog.write("preload-console \(summarizeConsolePayload(payload))")
         case "bridge-send-message":
             guard let payload = envelope["payload"] as? JSONDictionary else {
                 return
@@ -168,6 +180,14 @@ final class NativeHostBridgeRuntime {
                 return
             }
             sendBridgeResponse(requestID: requestID, result: nil)
+        case "bridge-host-call":
+            guard let payload = envelope["payload"] as? JSONDictionary,
+                  let requestID = (payload["requestId"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !requestID.isEmpty else {
+                return
+            }
+            handleBridgeHostCall(requestID: requestID, payload: payload)
         default:
             break
         }
@@ -316,6 +336,11 @@ final class NativeHostBridgeRuntime {
                 "error": "Streaming fetch is not supported in Codex Mobile yet.",
             ])
         case "mcp-request":
+            if let request = message["request"] as? JSONDictionary,
+               let method = request["method"] as? String,
+               method == "pick-files" {
+                NativeHostDebugLog.write("renderer-mcp-request method=pick-files")
+            }
             Task { [weak self] in
                 await self?.handleMCPRequestMessage(message)
             }
@@ -398,6 +423,35 @@ final class NativeHostBridgeRuntime {
             let loadTarget = try await resolveActiveLoadTarget(profile: profile, delegate: delegate)
             if let method = resolveRequestMethodName(rawURL) {
                 let body = parseJSONValue(from: message["body"] as? String ?? "") as? JSONDictionary
+                if method == "pick-files" {
+                    NativeHostDebugLog.write("fetch-pick-files start")
+                    do {
+                        let files = try await pickAndUploadFiles(
+                            title: resolveAttachmentPickerTitle(from: body ?? [:]),
+                            delegate: delegate,
+                            loadTarget: loadTarget,
+                            authToken: resolveRequestAuthToken(loadTarget: loadTarget, profile: profile)
+                        )
+                        NativeHostDebugLog.write("fetch-pick-files success count=\(files.count)")
+                        sendHostMessage(buildFetchSuccessResponse(
+                            requestID: requestID,
+                            body: [
+                                "files": files,
+                            ],
+                            status: 200,
+                            headers: [:]
+                        ))
+                    } catch {
+                        let message = delegate.runtimeNormalizeError(error)
+                        NativeHostDebugLog.write("fetch-pick-files failed message=\(message)")
+                        sendHostMessage(buildFetchErrorResponse(
+                            requestID: requestID,
+                            error: message,
+                            status: 500
+                        ))
+                    }
+                    return
+                }
                 if let localResult = resolveFetchMethodPayload(method: method, params: body) {
                     sendHostMessage(buildFetchSuccessResponse(
                         requestID: requestID,
@@ -452,6 +506,9 @@ final class NativeHostBridgeRuntime {
                 error: delegate.runtimeNormalizeError(error),
                 status: 500
             ))
+            if resolveRequestMethodName(rawURL) != nil {
+                delegate.runtimeHandleBridgeConnectionIssue(error)
+            }
         }
     }
 
@@ -468,6 +525,36 @@ final class NativeHostBridgeRuntime {
         do {
             let loadTarget = try await resolveActiveLoadTarget(profile: profile, delegate: delegate)
             let requestParams = request["params"] as? JSONDictionary ?? [:]
+            let authToken = resolveRequestAuthToken(loadTarget: loadTarget, profile: profile)
+
+            if method == "pick-files" {
+                NativeHostDebugLog.write("runtime-pick-files start")
+                let result: JSONDictionary = [
+                    "files": try await pickAndUploadFiles(
+                        title: resolveAttachmentPickerTitle(from: requestParams),
+                        delegate: delegate,
+                        loadTarget: loadTarget,
+                        authToken: authToken
+                    ),
+                ]
+                let fileCount = (result["files"] as? [Any])?.count ?? 0
+                NativeHostDebugLog.write("runtime-pick-files success count=\(fileCount)")
+                sendHostMessage([
+                    "type": "mcp-response",
+                    "hostId": Self.localHostID,
+                    "id": requestID,
+                    "result": result,
+                    "message": [
+                        "id": requestID,
+                        "result": result,
+                    ],
+                    "response": [
+                        "id": requestID,
+                        "result": result,
+                    ],
+                ])
+                return
+            }
 
             if let localResult = resolveFetchMethodPayload(method: method, params: requestParams) as? JSONDictionary {
                 sendHostMessage([
@@ -487,7 +574,6 @@ final class NativeHostBridgeRuntime {
                 return
             }
 
-            let authToken = resolveRequestAuthToken(loadTarget: loadTarget, profile: profile)
             let result: JSONDictionary
             do {
                 result = try await appServerCoordinator.performRequest(
@@ -544,6 +630,9 @@ final class NativeHostBridgeRuntime {
                 )
             }
         } catch {
+            if method == "pick-files" {
+                NativeHostDebugLog.write("runtime-pick-files failed message=\(delegate.runtimeNormalizeError(error))")
+            }
             let normalizedError = delegate.runtimeNormalizeError(error)
             sendHostMessage([
                 "type": "mcp-response",
@@ -565,7 +654,112 @@ final class NativeHostBridgeRuntime {
                     ],
                 ],
             ])
+            delegate.runtimeHandleBridgeConnectionIssue(error)
         }
+    }
+
+    private func pickAndUploadFiles(
+        title: String,
+        delegate: NativeHostBridgeRuntimeDelegate,
+        loadTarget: BridgeLoadTarget,
+        authToken: String?
+    ) async throws -> [JSONDictionary] {
+        switch try await delegate.runtimePickFiles(title: title) {
+        case let .deviceFiles(pickedFiles):
+            NativeHostDebugLog.write("pick-and-upload selected source=device count=\(pickedFiles.count)")
+            return try await uploadPickedFiles(
+                pickedFiles,
+                loadTarget: loadTarget,
+                authToken: authToken
+            )
+        case let .desktopFiles(references):
+            NativeHostDebugLog.write("pick-and-upload selected source=desktop count=\(references.count)")
+            return references.map { reference in
+                [
+                    "label": reference.name,
+                    "path": reference.path,
+                    "fsPath": reference.path,
+                ]
+            }
+        }
+    }
+
+    private func resolveAttachmentPickerTitle(from params: JSONDictionary) -> String {
+        if let pickerTitle = (params["pickerTitle"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !pickerTitle.isEmpty {
+            return pickerTitle
+        }
+        if let title = (params["title"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+        return ""
+    }
+
+    private func uploadPickedFiles(
+        _ files: [NativeHostPickedFile],
+        loadTarget: BridgeLoadTarget,
+        authToken: String?
+    ) async throws -> [JSONDictionary] {
+        if files.isEmpty {
+            return []
+        }
+
+        var uploadedFiles: [JSONDictionary] = []
+        for file in files {
+            NativeHostDebugLog.write("upload-picked-file start name=\(file.name) size=\(file.data.count)")
+            let result = try await BridgeAPI.performDirectRPC(
+                baseURL: loadTarget.baseURL.absoluteString,
+                method: "mobile/upload-picked-file",
+                params: [
+                    "name": file.name,
+                    "mimeType": file.mimeType,
+                    "contentsBase64": file.data.base64EncodedString(),
+                ],
+                authToken: authToken
+            )
+            if let errorMessage = (result["error"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !errorMessage.isEmpty {
+                throw NativeHostBridgeError.requestFailed(errorMessage)
+            }
+
+            let label = (result["label"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty ?? file.name
+            let path = (result["path"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            let fsPath = (result["fsPath"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            guard let path, let fsPath else {
+                throw NativeHostBridgeError.invalidResponse("Picked file upload did not return a desktop path.")
+            }
+
+            uploadedFiles.append([
+                "label": label,
+                "path": path,
+                "fsPath": fsPath,
+            ])
+            NativeHostDebugLog.write("upload-picked-file success path=\(fsPath)")
+        }
+        return uploadedFiles
+    }
+
+    private func summarizeConsolePayload(_ payload: JSONDictionary) -> String {
+        let tag = (payload["tag"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "unknown"
+        let trace = (payload["trace"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "console"
+        let rawPayload = payload["payload"]
+        let serializedPayload: String
+        if let rawPayload {
+            serializedPayload = jsonFragmentString(rawPayload)
+        } else {
+            serializedPayload = "null"
+        }
+        return "trace=\(trace) tag=\(tag) payload=\(serializedPayload)"
     }
 
     private func resolveFetchMethodPayload(method: String, params: JSONDictionary?) -> Any? {
@@ -732,6 +926,61 @@ final class NativeHostBridgeRuntime {
             })();
             """
         javaScriptEvaluator?(script)
+    }
+
+    private func handleBridgeHostCall(requestID: String, payload: JSONDictionary) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.handleBridgeHostCallAsync(requestID: requestID, payload: payload)
+        }
+    }
+
+    private func handleBridgeHostCallAsync(requestID: String, payload: JSONDictionary) async {
+        let method = normalizeBridgeHostMethodName(payload["method"] as? String)
+        guard let delegate,
+              let profile = delegate.runtimeActiveProfile else {
+            sendBridgeResponse(requestID: requestID, result: [
+                "supported": false,
+                "error": "No active desktop session is available.",
+            ])
+            return
+        }
+
+        let params = payload["params"] as? JSONDictionary ?? [:]
+        switch method {
+        case "attachment/pick":
+            do {
+                let loadTarget = try await resolveActiveLoadTarget(profile: profile, delegate: delegate)
+                let authToken = resolveRequestAuthToken(loadTarget: loadTarget, profile: profile)
+                let files = try await pickAndUploadFiles(
+                    title: resolveAttachmentPickerTitle(from: params),
+                    delegate: delegate,
+                    loadTarget: loadTarget,
+                    authToken: authToken
+                )
+                sendBridgeResponse(requestID: requestID, result: [
+                    "supported": true,
+                    "files": files,
+                ])
+            } catch {
+                sendBridgeResponse(requestID: requestID, result: [
+                    "supported": false,
+                    "error": delegate.runtimeNormalizeError(error),
+                ])
+                delegate.runtimeHandleBridgeConnectionIssue(error)
+            }
+        default:
+            sendBridgeResponse(requestID: requestID, result: [
+                "supported": false,
+                "error": "Unsupported Codex host method: \(method.isEmpty ? "unknown" : method)",
+            ])
+        }
+    }
+
+    private func normalizeBridgeHostMethodName(_ value: String?) -> String {
+        (value ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ".", with: "/")
     }
 
     fileprivate func sendWorkerMessage(workerID: String, payload: JSONDictionary) {
@@ -981,6 +1230,24 @@ final class NativeHostAppServerCoordinator {
                     NSLog("%@: %@", message, error.localizedDescription)
                 } else {
                     NSLog("%@", message)
+                }
+            },
+            onDisconnect: { [weak self] error in
+                guard let self else { return }
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.appServerWebSocketClient = nil
+                    self.activeWebSocketURL = nil
+                    self.activeHeaders = [:]
+                    let probe = await BridgeAPI.probeBridgeReady(
+                        baseURL: loadTarget.baseURL.absoluteString,
+                        authToken: authToken
+                    )
+                    if !probe.ready {
+                        self.runtime?.handleBridgeConnectionIssue(
+                            error ?? NativeHostBridgeError.webSocketClosed("App server websocket closed.")
+                        )
+                    }
                 }
             }
         )

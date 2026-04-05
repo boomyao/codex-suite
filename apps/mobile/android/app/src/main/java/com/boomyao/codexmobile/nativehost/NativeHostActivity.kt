@@ -37,6 +37,12 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InterruptedIOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.Locale
 import kotlin.concurrent.thread
 
@@ -150,7 +156,8 @@ class NativeHostActivity : AppCompatActivity() {
         importEnrollment(contents)
     }
     private var bridgeLoadGeneration = 0
-    private var autoReconnectAttemptedProfileId: String? = null
+    private var autoReconnectProfileId: String? = null
+    private var autoReconnectAttemptCount = 0
     private var autoReconnectRunnable: Runnable? = null
     private var workspaceFrameMarginStart = 0
     private var workspaceFrameMarginTop = 0
@@ -242,6 +249,7 @@ class NativeHostActivity : AppCompatActivity() {
                 logWarning = { message, error ->
                     android.util.Log.w("CodexMobile", message, error)
                 },
+                onConnectionLost = ::handleBridgeConnectionLost,
             )
         connectionSheetController =
             NativeHostConnectionSheetController(
@@ -249,8 +257,8 @@ class NativeHostActivity : AppCompatActivity() {
                 profileStore = profileStore,
                 activeProfileProvider = { activeProfile },
                 isConnectedProvider = { chromeState == ShellChromeState.CONNECTED },
-                isLoadingProvider = { chromeState == ShellChromeState.LOADING },
-                isErrorProvider = { chromeState == ShellChromeState.ERROR },
+                isLoadingProvider = { chromeState == ShellChromeState.LOADING || isAutoReconnectPending() },
+                isErrorProvider = { chromeState == ShellChromeState.ERROR && !isAutoReconnectPending() },
                 currentStatusMessageProvider = { currentStatusMessage },
                 currentConnectionStageProvider = { currentConnectionStage },
                 activateProfile = ::activateProfile,
@@ -281,6 +289,7 @@ class NativeHostActivity : AppCompatActivity() {
                 reconcileThreadSnapshotIfNeeded = { method, result, loadTarget, authToken ->
                     appServerCoordinator.reconcileThreadSnapshotIfNeeded(method, result, loadTarget, authToken)
                 },
+                onBridgeConnectionIssue = ::handleBridgeConnectionLost,
                 normalizeErrorMessage = ::normalizeErrorMessage,
             )
         connectionCoordinator =
@@ -288,7 +297,10 @@ class NativeHostActivity : AppCompatActivity() {
                 context = applicationContext,
                 profileStore = profileStore,
                 activeProfileProvider = { activeProfile },
-                openBridge = ::openBridge,
+                openBridge = { profile ->
+                    resetAutoReconnectState()
+                    openBridge(profile)
+                },
                 renderEmptyState = ::renderEmptyState,
                 renderConnectionFailure = ::renderConnectionFailure,
                 setStatus = ::setStatus,
@@ -449,12 +461,21 @@ class NativeHostActivity : AppCompatActivity() {
         if (chromeState != ShellChromeState.ERROR) {
             return
         }
-        if (autoReconnectAttemptedProfileId == profile.id || autoReconnectRunnable != null) {
+        if (!shouldAutoReconnect(profile, currentStatusMessage)) {
+            return
+        }
+        if (autoReconnectRunnable != null) {
             return
         }
 
-        autoReconnectAttemptedProfileId = profile.id
-        setStatus(getString(R.string.native_host_status_reconnecting_session))
+        val nextAttempt =
+            if (autoReconnectProfileId == profile.id) {
+                autoReconnectAttemptCount + 1
+            } else {
+                1
+            }
+        autoReconnectProfileId = profile.id
+        autoReconnectAttemptCount = nextAttempt
         val reconnectRunnable =
             Runnable {
                 autoReconnectRunnable = null
@@ -462,16 +483,20 @@ class NativeHostActivity : AppCompatActivity() {
                 if (activeSession?.id != profile.id || chromeState != ShellChromeState.ERROR) {
                     return@Runnable
                 }
-                reloadActiveBridge()
+                openBridge(
+                    profile,
+                    initialStatusMessage = getString(R.string.native_host_status_reconnecting_session),
+                )
             }
         autoReconnectRunnable = reconnectRunnable
-        rootContainer.postDelayed(reconnectRunnable, 1200L)
+        rootContainer.postDelayed(reconnectRunnable, reconnectDelayMs(nextAttempt))
     }
 
     private fun resetAutoReconnectState() {
         autoReconnectRunnable?.let(rootContainer::removeCallbacks)
         autoReconnectRunnable = null
-        autoReconnectAttemptedProfileId = null
+        autoReconnectProfileId = null
+        autoReconnectAttemptCount = 0
     }
 
     private fun reloadActiveBridge() {
@@ -608,6 +633,85 @@ class NativeHostActivity : AppCompatActivity() {
 
     private fun activateProfile(profile: BridgeProfile) {
         connectionCoordinator.activateProfile(profile)
+    }
+
+    private fun reconnectDelayMs(attempt: Int): Long {
+        return when (attempt) {
+            1 -> 1200L
+            2 -> 2500L
+            3 -> 5000L
+            4 -> 10_000L
+            else -> 15_000L
+        }
+    }
+
+    private fun isAutoReconnectPending(): Boolean {
+        return chromeState == ShellChromeState.ERROR && autoReconnectRunnable != null
+    }
+
+    private fun shouldAutoReconnect(profile: BridgeProfile, message: String): Boolean {
+        if (profile.id == "pending-error") {
+            return false
+        }
+
+        val normalized = message.trim()
+        if (normalized.isEmpty()) {
+            return true
+        }
+
+        return !(
+            normalized == getString(R.string.native_host_error_pairing_expired) ||
+                normalized == getString(R.string.native_host_error_secure_link_expired) ||
+                normalized.contains("expired", ignoreCase = true) ||
+                normalized.contains("fresh enrollment qr", ignoreCase = true) ||
+                normalized.contains("re-enrolled", ignoreCase = true) ||
+                normalized.contains("no longer valid", ignoreCase = true) ||
+                normalized.contains("invalid key", ignoreCase = true)
+            )
+    }
+
+    private fun isBridgeConnectionIssue(error: Throwable): Boolean {
+        if (
+            error is UnknownHostException ||
+            error is ConnectException ||
+            error is NoRouteToHostException ||
+            error is SocketTimeoutException ||
+            error is SocketException ||
+            error is InterruptedIOException
+        ) {
+            return true
+        }
+
+        val message = error.message?.trim().orEmpty()
+        return message.contains("timed out", ignoreCase = true) ||
+            message.contains("not connected", ignoreCase = true) ||
+            message.contains("connection refused", ignoreCase = true) ||
+            message.contains("connection reset", ignoreCase = true) ||
+            message.contains("network is unreachable", ignoreCase = true) ||
+            message.contains("broken pipe", ignoreCase = true) ||
+            message.contains("failed to connect", ignoreCase = true) ||
+            message.contains("websocket closed", ignoreCase = true)
+    }
+
+    private fun handleBridgeConnectionLost(error: Throwable?) {
+        val failure = error ?: IllegalStateException(getString(R.string.native_host_status_bridge_disconnected))
+        if (!isBridgeConnectionIssue(failure)) {
+            return
+        }
+
+        runOnUiThread {
+            val profile = activeProfile ?: return@runOnUiThread
+            if (chromeState == ShellChromeState.DISCONNECTED || chromeState == ShellChromeState.ERROR) {
+                return@runOnUiThread
+            }
+
+            appServerCoordinator.reset()
+            activeLoadTarget = null
+            renderWorkspaceErrorChrome(
+                profile,
+                getString(R.string.native_host_status_bridge_disconnected),
+            )
+        }
     }
 
     private fun compactLabel(value: String, maxLength: Int = 28): String {
@@ -1052,6 +1156,7 @@ class NativeHostActivity : AppCompatActivity() {
     private fun renderWorkspaceErrorChrome(profile: BridgeProfile, message: String) {
         clearConnectionProgress()
         chromeState = ShellChromeState.ERROR
+        currentStatusMessage = message
         workspaceFrameView.visibility = View.GONE
         setWorkspaceFrameMode(fullScreen = false)
         applyWindowBackgroundMode(connected = false)
@@ -1063,18 +1168,54 @@ class NativeHostActivity : AppCompatActivity() {
         hideSessionBar()
         heroCardView.visibility = View.VISIBLE
         stateIconView.visibility = View.GONE
-        heroEyebrowView.text = getString(R.string.native_host_hero_eyebrow_error)
-        updateStateChip(R.string.native_host_state_attention, ChipTone.WARNING)
+        val reconnecting = shouldAutoReconnect(profile, message)
+        heroEyebrowView.text =
+            getString(
+                if (reconnecting) {
+                    R.string.native_host_hero_eyebrow_reconnecting
+                } else {
+                    R.string.native_host_hero_eyebrow_error
+                },
+            )
+        updateStateChip(
+            if (reconnecting) {
+                R.string.native_host_state_reconnecting
+            } else {
+                R.string.native_host_state_attention
+            },
+            if (reconnecting) ChipTone.ACTIVE else ChipTone.WARNING,
+        )
         progressIndicator.visibility = View.GONE
         emptyStateContainer.visibility = View.GONE
         configureWelcomeState(enabled = false)
-        emptyTitleView.text = getString(R.string.native_host_workspace_error)
-        emptyBodyView.text = getString(R.string.native_host_workspace_error_body)
+        emptyTitleView.text =
+            getString(
+                if (reconnecting) {
+                    R.string.native_host_workspace_reconnecting
+                } else {
+                    R.string.native_host_workspace_error
+                },
+            )
+        emptyBodyView.text =
+            getString(
+                if (reconnecting) {
+                    R.string.native_host_workspace_reconnecting_body
+                } else {
+                    R.string.native_host_workspace_error_body
+                },
+            )
         statusView.text = summarizeWorkspaceError(message)
         runtimeDetailsView.visibility = View.GONE
         hintCardView.visibility = View.GONE
         primaryActionButton.visibility = View.VISIBLE
-        primaryActionButton.text = getString(R.string.native_host_retry_action)
+        primaryActionButton.text =
+            getString(
+                if (reconnecting) {
+                    R.string.native_host_retry_now_action
+                } else {
+                    R.string.native_host_retry_action
+                },
+            )
         secondaryActionButton.visibility = View.VISIBLE
         secondaryActionButton.text = getString(R.string.native_host_secondary_action_manage)
         webView.visibility = View.GONE

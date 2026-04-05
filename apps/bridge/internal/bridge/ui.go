@@ -169,10 +169,23 @@ func mobileWindowType(request *http.Request) string {
 	if err != nil {
 		return "electron"
 	}
-	if strings.TrimSpace(cookie.Value) != "" {
+	switch strings.ToLower(strings.TrimSpace(cookie.Value)) {
+	case "", "ios-native":
+		return "electron"
+	default:
 		return "browser"
 	}
-	return "electron"
+}
+
+func mobileHostPlatform(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	cookie, err := request.Cookie("codex_mobile_host")
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(cookie.Value))
 }
 
 func rewriteDesktopIndexHTML(source string, cfg Config, request *http.Request) string {
@@ -184,10 +197,12 @@ func rewriteDesktopIndexHTML(source string, cfg Config, request *http.Request) s
 		theme = "light"
 	}
 	windowType := mobileWindowType(request)
+	hostPlatform := mobileHostPlatform(request)
 	preloadBootstrap := strings.Join([]string{
 		"<script>",
 		fmt.Sprintf("window.__codexMobileInitialTheme=%q;", theme),
 		fmt.Sprintf("window.__codexMobileWindowType=%q;", windowType),
+		fmt.Sprintf("window.__codexMobileHostPlatform=%q;", hostPlatform),
 		fmt.Sprintf("window.codexWindowType=%q;", windowType),
 		fmt.Sprintf(`try{if(document&&document.documentElement){document.documentElement.setAttribute("data-codex-window-type",%q);}}catch(error){}`, windowType),
 		"</script>",
@@ -266,12 +281,16 @@ func buildMobilePreloadScript() string {
 (function () {
   var currentTheme = window.__codexMobileInitialTheme || "dark";
   var hostWindowType = window.__codexMobileWindowType || "electron";
+  var hostPlatform = window.__codexMobileHostPlatform || "";
   var listenersByWorker = {};
+  var listenersByCodexHostEvent = {};
   var themeListeners = [];
   var ENABLED_STATSIG_GATES = { "1609556872": true };
   var directRpcMethods = __DIRECT_RPC_METHODS__;
   var directRpcInflight = Object.create(null);
   var directRpcCache = Object.create(null);
+  var desktopResourceUrlCache = Object.create(null);
+  var desktopResourceUrlInflight = Object.create(null);
   var pendingBridgeRequests = Object.create(null);
   var nextBridgeRequestNumber = 0;
 
@@ -344,8 +363,22 @@ func buildMobilePreloadScript() string {
     return listenersByWorker[workerId];
   }
 
+  function getCodexHostEventListeners(eventName) {
+    if (!listenersByCodexHostEvent[eventName]) {
+      listenersByCodexHostEvent[eventName] = [];
+    }
+    return listenersByCodexHostEvent[eventName];
+  }
+
   function emitWorkerMessage(workerId, payload) {
     var listeners = getWorkerListeners(workerId).slice();
+    for (var i = 0; i < listeners.length; i += 1) {
+      try { listeners[i](payload); } catch (error) {}
+    }
+  }
+
+  function emitCodexHostEvent(eventName, payload) {
+    var listeners = getCodexHostEventListeners(eventName).slice();
     for (var i = 0; i < listeners.length; i += 1) {
       try { listeners[i](payload); } catch (error) {}
     }
@@ -359,6 +392,9 @@ func buildMobilePreloadScript() string {
   }
 
   function dispatchHostMessage(message) {
+    if (message && message.type === "codex-host-event" && typeof message.eventName === "string") {
+      emitCodexHostEvent(message.eventName, message.payload);
+    }
     try {
       window.dispatchEvent(new MessageEvent("message", { data: message }));
     } catch (error) {
@@ -685,6 +721,9 @@ func buildMobilePreloadScript() string {
     if (method === "account/read" && (!params || params.refreshToken === false)) {
       return 60000;
     }
+    if (method === "host/capabilities") {
+      return 60000;
+    }
     return 0;
   }
 
@@ -701,6 +740,263 @@ func buildMobilePreloadScript() string {
       message: { id: requestId, result: result },
       response: { id: requestId, result: result }
     };
+  }
+
+  function normalizeCodexHostMethod(method) {
+    if (typeof method !== "string") {
+      return "";
+    }
+    return method.trim().replace(/\./g, "/");
+  }
+
+  function callDirectCodexHostMethod(method, params) {
+    return directRpc(method, params || {}).then(function (result) {
+      if (result && result.supported === false && typeof result.error === "string" && result.error) {
+        throw new Error(result.error);
+      }
+      return result;
+    });
+  }
+
+  function isWindowsDrivePath(value) {
+    return /^[A-Za-z]:[\\/]/.test(value);
+  }
+
+  function looksLikeDesktopAbsolutePath(value) {
+    if (typeof value !== "string" || value.length === 0) {
+      return false;
+    }
+    if (isWindowsDrivePath(value) || /^\\\\[^\\]+\\[^\\]+/.test(value)) {
+      return true;
+    }
+    return /^\/(Users|home|private|var|tmp|opt|Volumes|mnt)\//.test(value) || /^\/[A-Za-z]:\//.test(value);
+  }
+
+  function normalizeDesktopResourceRequest(value) {
+    if (typeof value !== "string") {
+      return null;
+    }
+    var trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    if (/^(data|blob|http|https|app|about|javascript|mailto|tel):/i.test(trimmed)) {
+      return null;
+    }
+    if (/^file:\/\//i.test(trimmed)) {
+      return { cacheKey: "uri::" + trimmed, params: { uri: trimmed } };
+    }
+    if (looksLikeDesktopAbsolutePath(trimmed)) {
+      return { cacheKey: "path::" + trimmed, params: { path: trimmed } };
+    }
+    try {
+      var parsed = new URL(trimmed, window.location.href);
+      if (parsed.protocol === "file:") {
+        return { cacheKey: "uri::" + parsed.href, params: { uri: parsed.href } };
+      }
+      if ((parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.origin === window.location.origin) {
+        var pathname = decodeURIComponent(parsed.pathname || "");
+        if (looksLikeDesktopAbsolutePath(pathname)) {
+          return { cacheKey: "path::" + pathname, params: { path: pathname } };
+        }
+      }
+    } catch (error) {}
+    return null;
+  }
+
+  function resolveDesktopResourceUrl(value) {
+    var normalized = normalizeDesktopResourceRequest(value);
+    if (!normalized) {
+      return Promise.resolve(null);
+    }
+    if (Object.prototype.hasOwnProperty.call(desktopResourceUrlCache, normalized.cacheKey)) {
+      return Promise.resolve(desktopResourceUrlCache[normalized.cacheKey]);
+    }
+    if (desktopResourceUrlInflight[normalized.cacheKey]) {
+      return desktopResourceUrlInflight[normalized.cacheKey];
+    }
+    var request = callDirectCodexHostMethod("resource/resolve", normalized.params).then(function (result) {
+      var resolvedUrl = result && typeof result.url === "string" ? result.url : null;
+      desktopResourceUrlCache[normalized.cacheKey] = resolvedUrl;
+      return resolvedUrl;
+    }).catch(function (error) {
+      trace("desktop-resource.resolve.error", {
+        value: value,
+        message: error && error.message ? error.message : String(error)
+      });
+      desktopResourceUrlCache[normalized.cacheKey] = null;
+      return null;
+    }).finally(function () {
+      if (desktopResourceUrlInflight[normalized.cacheKey] === request) {
+        delete desktopResourceUrlInflight[normalized.cacheKey];
+      }
+    });
+    desktopResourceUrlInflight[normalized.cacheKey] = request;
+    return request;
+  }
+
+  function extractSingleCssUrl(value) {
+    if (typeof value !== "string" || value.length === 0) {
+      return null;
+    }
+    var match = value.match(/^\s*url\((['"]?)(.*?)\1\)\s*$/i);
+    return match && typeof match[2] === "string" && match[2].length > 0 ? match[2] : null;
+  }
+
+  function rewriteElementResourceAttribute(element, attributeName) {
+    if (!element || typeof element.getAttribute !== "function") {
+      return;
+    }
+    var rawValue = element.getAttribute(attributeName);
+    if (typeof rawValue !== "string" || rawValue.length === 0) {
+      return;
+    }
+    resolveDesktopResourceUrl(rawValue).then(function (resolvedUrl) {
+      if (!resolvedUrl) {
+        return;
+      }
+      if (element.getAttribute(attributeName) !== rawValue) {
+        return;
+      }
+      if (rawValue === resolvedUrl) {
+        return;
+      }
+      element.setAttribute(attributeName, resolvedUrl);
+    });
+  }
+
+  function rewriteElementBackgroundImage(element) {
+    if (!element || !element.style) {
+      return;
+    }
+    var styleValue = element.style.backgroundImage;
+    var rawUrl = extractSingleCssUrl(styleValue);
+    if (!rawUrl) {
+      return;
+    }
+    resolveDesktopResourceUrl(rawUrl).then(function (resolvedUrl) {
+      if (!resolvedUrl) {
+        return;
+      }
+      if (element.style.backgroundImage !== styleValue) {
+        return;
+      }
+      element.style.backgroundImage = "url(\"" + resolvedUrl.replace(/"/g, "%22") + "\")";
+    });
+  }
+
+  function rewriteNodeDesktopResources(node) {
+    if (!node || node.nodeType !== 1) {
+      return;
+    }
+    var element = node;
+    var tagName = typeof element.tagName === "string" ? element.tagName.toLowerCase() : "";
+    if (tagName === "img" || tagName === "source") {
+      rewriteElementResourceAttribute(element, "src");
+    } else if (tagName === "video") {
+      rewriteElementResourceAttribute(element, "poster");
+    }
+    rewriteElementBackgroundImage(element);
+    if (typeof element.querySelectorAll !== "function") {
+      return;
+    }
+    var nested = element.querySelectorAll("img[src],source[src],video[poster],[style]");
+    for (var index = 0; index < nested.length; index += 1) {
+      rewriteNodeDesktopResources(nested[index]);
+    }
+  }
+
+  function installDesktopResourceObserver() {
+    if (window.__codexMobileDesktopResourceObserverInstalled) {
+      return;
+    }
+    var root = document.documentElement || document.body;
+    if (!root || typeof MutationObserver === "undefined") {
+      return;
+    }
+    window.__codexMobileDesktopResourceObserverInstalled = true;
+    var observer = new MutationObserver(function (mutations) {
+      for (var index = 0; index < mutations.length; index += 1) {
+        var mutation = mutations[index];
+        if (mutation.type === "childList") {
+          for (var childIndex = 0; childIndex < mutation.addedNodes.length; childIndex += 1) {
+            rewriteNodeDesktopResources(mutation.addedNodes[childIndex]);
+          }
+          continue;
+        }
+        if (mutation.type === "attributes" && mutation.target && mutation.target.nodeType === 1) {
+          if (mutation.attributeName === "src") {
+            rewriteElementResourceAttribute(mutation.target, "src");
+          } else if (mutation.attributeName === "poster") {
+            rewriteElementResourceAttribute(mutation.target, "poster");
+          } else if (mutation.attributeName === "style") {
+            rewriteElementBackgroundImage(mutation.target);
+          }
+        }
+      }
+    });
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["src", "poster", "style"]
+    });
+    rewriteNodeDesktopResources(root);
+  }
+
+  function installDesktopResourcePropertyProxy(ctor, propertyName, attributeName) {
+    if (typeof ctor !== "function" || !ctor.prototype) {
+      return;
+    }
+    var sentinel = "__codexMobileDesktopResourceProxy_" + propertyName;
+    if (ctor.prototype[sentinel]) {
+      return;
+    }
+    var descriptor = Object.getOwnPropertyDescriptor(ctor.prototype, propertyName);
+    if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function") {
+      return;
+    }
+    Object.defineProperty(ctor.prototype, propertyName, {
+      configurable: true,
+      enumerable: descriptor.enumerable,
+      get: function () {
+        return descriptor.get.call(this);
+      },
+      set: function (value) {
+        descriptor.set.call(this, value);
+        rewriteElementResourceAttribute(this, attributeName);
+      }
+    });
+    ctor.prototype[sentinel] = true;
+  }
+
+  function installDesktopResourceProxy() {
+    if (window.__codexMobileDesktopResourceProxyInstalled) {
+      return;
+    }
+    window.__codexMobileDesktopResourceProxyInstalled = true;
+    if (typeof Element !== "undefined" && Element.prototype && typeof Element.prototype.setAttribute === "function") {
+      var originalSetAttribute = Element.prototype.setAttribute;
+      if (!Element.prototype.__codexMobileDesktopResourceSetAttributePatched) {
+        Element.prototype.setAttribute = function (name, value) {
+          originalSetAttribute.call(this, name, value);
+          var normalizedName = typeof name === "string" ? name.toLowerCase() : "";
+          if (normalizedName === "src" || normalizedName === "poster") {
+            rewriteElementResourceAttribute(this, normalizedName);
+          } else if (normalizedName === "style") {
+            rewriteElementBackgroundImage(this);
+          }
+        };
+        Element.prototype.__codexMobileDesktopResourceSetAttributePatched = true;
+      }
+    }
+    installDesktopResourcePropertyProxy(window.HTMLImageElement, "src", "src");
+    installDesktopResourcePropertyProxy(window.HTMLSourceElement, "src", "src");
+    installDesktopResourcePropertyProxy(window.HTMLVideoElement, "poster", "poster");
+    installDesktopResourceObserver();
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", installDesktopResourceObserver, { once: true });
+    }
   }
 
   function directRpc(method, params) {
@@ -992,6 +1288,79 @@ func buildMobilePreloadScript() string {
     return "";
   }
 
+  async function interceptMobilePickFilesRpcFetch(input, init) {
+    if (hostPlatform !== "ios-native") {
+      return null;
+    }
+    var parsed = parseRequestUrl(getFetchUrl(input));
+    if (!parsed || parsed.origin !== window.location.origin) {
+      return null;
+    }
+    if (normalizeRequestPathname(parsed.pathname || "/") !== "/codex-mobile/rpc") {
+      return null;
+    }
+    var method = "GET";
+    if (init && typeof init.method === "string" && init.method) {
+      method = init.method;
+    } else if (input && typeof input.method === "string" && input.method) {
+      method = input.method;
+    }
+    if (String(method).toUpperCase() !== "POST") {
+      return null;
+    }
+    var rawBody = await readFetchBodyText(input, init);
+    if (!rawBody) {
+      return null;
+    }
+    var payload = null;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch (error) {
+      return null;
+    }
+    if (!payload || payload.method !== "pick-files") {
+      return null;
+    }
+    trace("mobile-direct-rpc.pick-files.start", {
+      method: payload.method,
+      params: payload.params || null
+    });
+    try {
+      var result = await requestBridgeResult("bridge-host-call", {
+        method: "attachment/pick",
+        params: cloneJson(payload.params || {})
+      }, "host-call");
+      if (!result || result.supported === false) {
+        throw new Error(result && typeof result.error === "string" && result.error ? result.error : "Unable to open file picker");
+      }
+      var files = Array.isArray(result.files) ? result.files : [];
+      trace("mobile-direct-rpc.pick-files.done", {
+        count: files.length
+      });
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          files: files
+        }
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    } catch (error) {
+      var message = error && error.message ? String(error.message) : "Unable to open file picker";
+      trace("mobile-direct-rpc.pick-files.failed", {
+        message: message
+      });
+      return new Response(JSON.stringify({
+        ok: false,
+        error: message
+      }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+  }
+
   async function interceptCodexProtocolFetch(input, init) {
     var parsed = new URL(getFetchUrl(input), window.location.href);
     var method = parsed.pathname.replace(/^\/+/, "") || null;
@@ -1032,31 +1401,35 @@ func buildMobilePreloadScript() string {
       return;
     }
     var originalFetch = window.fetch.bind(window);
-    window.fetch = function (input, init) {
+    window.fetch = async function (input, init) {
       var url = getFetchUrl(input);
+      var mobilePickFilesResponse = await interceptMobilePickFilesRpcFetch(input, init);
+      if (mobilePickFilesResponse) {
+        return mobilePickFilesResponse;
+      }
       if (isStatsigInitUrl(url)) {
-        return Promise.resolve(new Response(JSON.stringify(buildStatsigBootstrapPayload()), {
+        return new Response(JSON.stringify(buildStatsigBootstrapPayload()), {
           status: 200,
           headers: { "Content-Type": "application/json" }
-        }));
+        });
       }
       if (isCodexProtocolUrl(url)) {
-        return interceptCodexProtocolFetch(input, init);
+        return await interceptCodexProtocolFetch(input, init);
       }
       if (isSentryIpcUrl(url)) {
-        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+        return new Response(JSON.stringify({ ok: true }), {
           status: 200,
           headers: { "Content-Type": "application/json" }
-        }));
+        });
       }
       if (isExternalConnectorDirectoryUrl(url)) {
         post("connector-directory-stubbed", { url: url });
-        return Promise.resolve(new Response(JSON.stringify(buildEmptyConnectorDirectoryPayload(url)), {
+        return new Response(JSON.stringify(buildEmptyConnectorDirectoryPayload(url)), {
           status: 200,
           headers: { "Content-Type": "application/json" }
-        }));
+        });
       }
-      return originalFetch(input, init);
+      return await originalFetch(input, init);
     };
   }
 
@@ -1156,8 +1529,60 @@ func buildMobilePreloadScript() string {
     }
   };
 
+  window.codexHost = {
+    getCapabilities: function () {
+      return callDirectCodexHostMethod("host/capabilities", {}).then(function (capabilities) {
+        if (hostPlatform !== "ios-native") {
+          return capabilities;
+        }
+        var attachmentPick = Object.assign({}, capabilities && capabilities.attachmentPick || {});
+        attachmentPick.device = true;
+        return Object.assign({}, capabilities || {}, {
+          attachmentPick: attachmentPick
+        });
+      });
+    },
+    call: function (method, params) {
+      var normalizedMethod = normalizeCodexHostMethod(method);
+      if (!normalizedMethod) {
+        return Promise.reject(new Error("Codex host method is required."));
+      }
+      if (normalizedMethod === "attachment/pick") {
+        return requestBridgeResult("bridge-host-call", {
+          method: normalizedMethod,
+          params: cloneJson(params || {})
+        }, "host-call").then(function (result) {
+          if (result && typeof result.error === "string" && result.error) {
+            throw new Error(result.error);
+          }
+          return result;
+        });
+      }
+      if (!isDirectRpcMethod(normalizedMethod)) {
+        return Promise.reject(new Error("Unsupported Codex host method: " + normalizedMethod));
+      }
+      return callDirectCodexHostMethod(normalizedMethod, params || {});
+    },
+    subscribe: function (eventName, handler) {
+      if (typeof eventName !== "string" || !eventName || typeof handler !== "function") {
+        return function () {};
+      }
+      var listeners = getCodexHostEventListeners(eventName);
+      listeners.push(handler);
+      return function () {
+        var nextListeners = listenersByCodexHostEvent[eventName];
+        if (!nextListeners) { return; }
+        arrayRemove(nextListeners, handler);
+        if (nextListeners.length === 0) {
+          delete listenersByCodexHostEvent[eventName];
+        }
+      };
+    }
+  };
+
   installStatsigReadyStub();
   interceptStatsigFetch();
+  installDesktopResourceProxy();
   ensureWindowType();
   installThemeSurfaceOverrides();
   applyThemeAttributes(currentTheme);

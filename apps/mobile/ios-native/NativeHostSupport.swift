@@ -3,6 +3,48 @@ import SwiftUI
 
 typealias JSONDictionary = [String: Any]
 
+enum NativeHostDebugLog {
+    private static let fileName = "codex-mobile-debug.log"
+
+    private static var fileURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent(fileName)
+    }
+
+    static func reset() {
+        guard let fileURL else {
+            return
+        }
+        try? FileManager.default.removeItem(at: fileURL)
+        write("session-start")
+    }
+
+    static func write(_ message: String) {
+        guard let fileURL,
+              let data = formattedLine(message).data(using: .utf8) else {
+            return
+        }
+
+        if FileManager.default.fileExists(atPath: fileURL.path) == false {
+            FileManager.default.createFile(atPath: fileURL.path, contents: data)
+            return
+        }
+
+        do {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } catch {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    private static func formattedLine(_ message: String) -> String {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        return "\(timestamp) \(message)\n"
+    }
+}
+
 enum NativeHostBridgeError: LocalizedError {
     case invalidPayload(String)
     case invalidURL(String)
@@ -56,6 +98,9 @@ final class NativeHostPreferencesStore {
     private let defaults = UserDefaults.standard
     private let themeModeKey = "codex.nativeHost.preferences.themeMode"
     private let autoResumeKey = "codex.nativeHost.preferences.autoResumeActiveSession"
+    private let fullDesktopFileAccessKey = "codex.nativeHost.preferences.fullDesktopFileAccess"
+    private let recentDesktopDirectoriesKey = "codex.nativeHost.preferences.recentDesktopDirectories"
+    private let maxRecentDesktopDirectories = 8
 
     func readThemeMode() -> ThemeMode {
         ThemeMode(rawValue: defaults.string(forKey: themeModeKey) ?? "") ?? .system
@@ -71,6 +116,39 @@ final class NativeHostPreferencesStore {
 
     func setAutoResumeActiveSession(_ enabled: Bool) {
         defaults.set(enabled, forKey: autoResumeKey)
+    }
+
+    func isFullDesktopFileAccessEnabled() -> Bool {
+        defaults.object(forKey: fullDesktopFileAccessKey) as? Bool ?? false
+    }
+
+    func setFullDesktopFileAccessEnabled(_ enabled: Bool) {
+        defaults.set(enabled, forKey: fullDesktopFileAccessKey)
+    }
+
+    func readRecentDesktopDirectories() -> [String] {
+        normalizeRecentDesktopDirectories(defaults.stringArray(forKey: recentDesktopDirectoriesKey) ?? [])
+    }
+
+    func writeRecentDesktopDirectories(_ paths: [String]) {
+        defaults.set(normalizeRecentDesktopDirectories(paths), forKey: recentDesktopDirectoriesKey)
+    }
+
+    private func normalizeRecentDesktopDirectories(_ paths: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for path in paths {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seen.contains(trimmed) == false else {
+                continue
+            }
+            seen.insert(trimmed)
+            result.append(trimmed)
+            if result.count == maxRecentDesktopDirectories {
+                break
+            }
+        }
+        return result
     }
 }
 
@@ -113,6 +191,268 @@ struct BridgeBootstrapState {
     let workspaceRootLabels: [String: String]
     let pinnedThreadIDs: [String]
     let globalState: JSONDictionary
+}
+
+struct NativeHostPickedFile {
+    let name: String
+    let mimeType: String
+    let data: Data
+}
+
+struct NativeHostDesktopFileReference: Equatable, Identifiable {
+    let name: String
+    let path: String
+
+    var id: String { path }
+}
+
+struct NativeHostDesktopDirectoryEntry: Equatable, Identifiable {
+    let name: String
+    let path: String
+    let isDirectory: Bool
+
+    var id: String { path }
+}
+
+struct NativeHostDesktopDirectoryListing: Equatable {
+    let directoryPath: String
+    let entries: [NativeHostDesktopDirectoryEntry]
+}
+
+enum NativeHostBrowserSessionSource: String, CaseIterable, Identifiable {
+    case preview
+    case attach
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .preview:
+            return "Preview Browser"
+        case .attach:
+            return "Attach Chrome Tab"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .preview:
+            return "Launch a dedicated browser session for previews."
+        case .attach:
+            return "Control a tab from your real Chrome session."
+        }
+    }
+}
+
+enum NativeHostBrowserViewportPreset: String, CaseIterable, Identifiable {
+    case desktop
+    case tablet
+    case mobile
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .desktop:
+            return "Desktop"
+        case .tablet:
+            return "Tablet"
+        case .mobile:
+            return "Mobile"
+        }
+    }
+}
+
+struct NativeHostBrowserAttachTarget: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let url: String
+    let debugBaseURL: String
+}
+
+struct NativeHostBrowserSessionSummary: Equatable {
+    let sessionID: String
+    let source: NativeHostBrowserSessionSource
+    let title: String
+    let url: String
+    let loading: Bool
+    let isStreaming: Bool
+    let textInputActive: Bool
+    let editableText: String
+    let selectionStart: Int
+    let selectionEnd: Int
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let width: Int
+    let height: Int
+    let scale: Double
+    let debugBaseURL: String?
+    let targetID: String?
+}
+
+struct NativeHostBrowserSessionSnapshot: Equatable {
+    let summary: NativeHostBrowserSessionSummary
+    let revision: Int
+    let mimeType: String
+    let imageData: Data
+    let consoleErrorCount: Int
+    let consoleWarnCount: Int
+    let consoleLines: [String]
+    let networkInflightCount: Int
+    let networkFailedCount: Int
+    let networkFailedLines: [String]
+}
+
+struct NativeHostDesktopSessionSummary: Equatable {
+    let sessionID: String
+    let title: String
+    let isStreaming: Bool
+    let width: Int
+    let height: Int
+    let scale: Double
+    let preferredTransport: String
+    let videoCodec: String?
+    let videoReady: Bool
+    let videoError: String?
+    let lastError: String?
+    let textInputActive: Bool
+    let editableText: String
+    let editablePlaceholder: String
+    let editableRole: String?
+    let selectionStart: Int
+    let selectionEnd: Int
+}
+
+struct NativeHostDesktopWebRTCOffer: Equatable {
+    let peerID: String
+    let sdp: String
+}
+
+actor BrowserSessionFrameStreamClient {
+    private let webSocketURL: URL
+    private let headers: [String: String]
+    private let onFrame: @Sendable (Data) async -> Void
+    private let onStatus: @Sendable (JSONDictionary) async -> Void
+    private let onDisconnect: @Sendable (Error?) -> Void
+
+    private var session: URLSession?
+    private var socket: URLSessionWebSocketTask?
+    private var receiveLoopTask: Task<Void, Never>?
+    private var pingLoopTask: Task<Void, Never>?
+    private var disconnectNotified = false
+    private var closeRequested = false
+
+    init(
+        webSocketURL: URL,
+        headers: [String: String],
+        onFrame: @escaping @Sendable (Data) async -> Void,
+        onStatus: @escaping @Sendable (JSONDictionary) async -> Void,
+        onDisconnect: @escaping @Sendable (Error?) -> Void
+    ) {
+        self.webSocketURL = webSocketURL
+        self.headers = headers
+        self.onFrame = onFrame
+        self.onStatus = onStatus
+        self.onDisconnect = onDisconnect
+    }
+
+    func connect() {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 20
+        let session = URLSession(configuration: configuration)
+        var request = URLRequest(url: webSocketURL)
+        headers.forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        let socket = session.webSocketTask(with: request)
+
+        closeRequested = false
+        disconnectNotified = false
+        self.session = session
+        self.socket = socket
+        socket.resume()
+
+        receiveLoopTask = Task { [weak self] in
+            guard let self else { return }
+            await self.receiveLoop(using: socket)
+        }
+        pingLoopTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runPingLoop(using: socket)
+        }
+    }
+
+    func close() async {
+        closeRequested = true
+        disconnectNotified = true
+        pingLoopTask?.cancel()
+        receiveLoopTask?.cancel()
+        socket?.cancel(with: .normalClosure, reason: nil)
+        session?.invalidateAndCancel()
+        socket = nil
+        session = nil
+        pingLoopTask = nil
+        receiveLoopTask = nil
+    }
+
+    private func receiveLoop(using socket: URLSessionWebSocketTask) async {
+        do {
+            while !Task.isCancelled {
+                let message = try await socket.receive()
+                switch message {
+                case let .data(data):
+                    await onFrame(data)
+                case let .string(text):
+                    guard let payload = parseJSONValue(from: text) as? JSONDictionary,
+                          let type = (payload["type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          type == "status",
+                          let statusPayload = payload["payload"] as? JSONDictionary else {
+                        continue
+                    }
+                    await onStatus(deepCopyJSONObject(statusPayload))
+                @unknown default:
+                    continue
+                }
+            }
+        } catch {
+            await handleDisconnect(error)
+        }
+    }
+
+    private func runPingLoop(using socket: URLSessionWebSocketTask) async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: 15_000_000_000)
+                try Task.checkCancellation()
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    socket.sendPing { error in
+                        if let error {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume(returning: ())
+                        }
+                    }
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await handleDisconnect(error)
+                return
+            }
+        }
+    }
+
+    private func handleDisconnect(_ error: Error?) async {
+        if disconnectNotified || closeRequested {
+            return
+        }
+        disconnectNotified = true
+        onDisconnect(error)
+    }
+}
+
+enum NativeHostAttachmentSelection {
+    case deviceFiles([NativeHostPickedFile])
+    case desktopFiles([NativeHostDesktopFileReference])
 }
 
 enum NativeHostConnectionStage: String, CaseIterable {

@@ -26,6 +26,22 @@ var localDirectRPCMethodNames = []string{
 	"active-workspace-roots",
 	"account-info",
 	"app/list",
+	"browser-session/input",
+	"browser-session/list-targets",
+	"browser-session/navigate",
+	"browser-session/next-frame",
+	"browser-session/resize",
+	"browser-session/snapshot",
+	"browser-session/start",
+	"browser-session/status",
+	"browser-session/stop",
+	"browser-session/sync-editable",
+	"desktop-session/input",
+	"desktop-session/start",
+	"desktop-session/status",
+	"desktop-session/stop",
+	"desktop-session/webrtc-answer",
+	"desktop-session/webrtc-offer",
 	"codex-home",
 	"developer-instructions",
 	"experimentalFeature/list",
@@ -52,13 +68,16 @@ var localDirectRPCMethodNames = []string{
 	"open-in-targets",
 	"os-info",
 	"paths-exist",
+	"read-file-binary",
 	"recommended-skills",
 	"remote-workspace-directory-entries",
+	"resource/resolve",
 	"set-configuration",
 	"set-global-state",
 	"set-pinned-threads-order",
 	"set-thread-pinned",
 	"thread-terminal-snapshot",
+	"host/capabilities",
 	"workspace-root-options",
 	"worktree-shell-environment-config",
 }
@@ -82,6 +101,7 @@ var MobileDirectRPCMethods = append(
 var LocalDirectRPCMethods = sliceToSet(append(
 	append([]string{}, localDirectRPCMethodNames...),
 	"get-global-state-snapshot",
+	"mobile/upload-picked-file",
 ))
 
 func sliceToSet(values []string) map[string]struct{} {
@@ -167,6 +187,9 @@ type Bridge struct {
 	closeOnce                      sync.Once
 	mu                             sync.Mutex
 	localState                     *localDirectRPCState
+	resolvedMobileResources        map[string]resolvedMobileResource
+	browserSessions                *browserSessionManager
+	desktopSessions                *desktopSessionManager
 	info                           *Info
 	runtime                        RuntimeStatus
 	exposure                       ExposureStatus
@@ -207,6 +230,8 @@ func New(config Config, logger *log.Logger) *Bridge {
 			configurationState: map[string]any{},
 			pinnedThreadIDs:    []string{},
 		},
+		browserSessions: newBrowserSessionManager(logger),
+		desktopSessions: newDesktopSessionManager(logger, config.Port),
 		exposure: ExposureStatus{
 			Mode:  "none",
 			Ready: false,
@@ -445,6 +470,12 @@ func (b *Bridge) requireAuthorization(w http.ResponseWriter, r *http.Request) bo
 func (b *Bridge) Close(ctx context.Context) error {
 	var err error
 	b.closeOnce.Do(func() {
+		if b.browserSessions != nil {
+			b.browserSessions.Close(ctx)
+		}
+		if b.desktopSessions != nil {
+			b.desktopSessions.Close(ctx)
+		}
 		if b.server != nil {
 			err = b.server.Shutdown(ctx)
 		}
@@ -458,6 +489,18 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/auth/session" {
 		b.handleAuthSession(w, r)
+		return
+	}
+
+	if r.URL.Path == "/codex-mobile/browser-session/stream" {
+		if !websocket.IsWebSocketUpgrade(r) {
+			sendText(w, http.StatusUpgradeRequired, "WebSocket Upgrade Required\n")
+			return
+		}
+		if !b.requireAuthorization(w, r) {
+			return
+		}
+		b.handleBrowserSessionStreamSocket(w, r)
 		return
 	}
 
@@ -479,6 +522,14 @@ func (b *Bridge) handleRoot(w http.ResponseWriter, r *http.Request) {
 		}
 		b.handleDirectRPC(w, r)
 		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/codex-mobile/resource/") {
+		if !b.requireAuthorization(w, r) {
+			return
+		}
+		if b.handleMobileResource(w, r) {
+			return
+		}
 	}
 	if b.handleWhamStub(w, r) {
 		return
@@ -823,6 +874,8 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 		}
 	case "recommended-skills":
 		return map[string]any{"skills": []any{}, "error": nil}
+	case "host/capabilities":
+		return b.mobileHostCapabilities()
 	case "ide-context":
 		return map[string]any{"status": "disconnected", "connected": false, "context": nil}
 	case "local-custom-agents":
@@ -858,6 +911,40 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 		return map[string]any{"origins": []any{}}
 	case "paths-exist":
 		return map[string]any{"existingPaths": existingPaths(anySliceParam(params, "paths"))}
+	case "read-file-binary":
+		return b.readFileBinary(params)
+	case "browser-session/start":
+		return b.startBrowserSession(params)
+	case "browser-session/list-targets":
+		return b.listBrowserSessionTargets(params)
+	case "browser-session/status":
+		return b.browserSessionStatus(params)
+	case "browser-session/snapshot":
+		return b.browserSessionSnapshot(params)
+	case "browser-session/navigate":
+		return b.navigateBrowserSession(params)
+	case "browser-session/next-frame":
+		return b.browserSessionNextFrame(params)
+	case "browser-session/input":
+		return b.browserSessionInput(params)
+	case "browser-session/resize":
+		return b.resizeBrowserSession(params)
+	case "browser-session/stop":
+		return b.stopBrowserSession(params)
+	case "browser-session/sync-editable":
+		return b.browserSessionSyncEditable(params)
+	case "desktop-session/start":
+		return b.startDesktopSession(params)
+	case "desktop-session/status":
+		return b.desktopSessionStatus(params)
+	case "desktop-session/input":
+		return b.desktopSessionInput(params)
+	case "desktop-session/stop":
+		return b.stopDesktopSession(params)
+	case "desktop-session/webrtc-offer":
+		return b.desktopSessionWebRTCOffer(params)
+	case "desktop-session/webrtc-answer":
+		return b.desktopSessionWebRTCAnswer(params)
 	case "mcp-codex-config":
 		return map[string]any{"config": nil}
 	case "worktree-shell-environment-config":
@@ -875,8 +962,11 @@ func (b *Bridge) performLocalDirectRPC(method string, params map[string]any) any
 			},
 		}
 	case "remote-workspace-directory-entries":
-		directoryPath, _ := stringParam(params, "directoryPath")
-		return map[string]any{"directoryPath": directoryPath, "entries": []any{}}
+		return b.listMobileDirectoryEntries(params)
+	case "resource/resolve":
+		return b.resolveMobileResource(params)
+	case "mobile/upload-picked-file":
+		return b.uploadPickedMobileFile(params)
 	default:
 		return nil
 	}

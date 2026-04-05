@@ -6,7 +6,7 @@ This note covers the expected Android UX for saved Codex Mobile sessions across 
 
 - If the user was actively inside a workspace and the app is backgrounded, returning to the app should feel continuous.
 - Cold launch should land on the native session page instead of immediately reopening the last session.
-- If a session drops while the user is already in that session flow, the native session UI may attempt a single automatic reconnect.
+- If a session drops while the user is already in that session flow, the native session UI should automatically keep retrying with backoff until the bridge comes back or the failure is clearly unrecoverable.
 - If the user explicitly backs out to the native session picker, that is treated as an intentional exit from the workspace. A later launch should not auto-reconnect until the user chooses a saved session again.
 
 ## Expected UX
@@ -20,9 +20,9 @@ This note covers the expected Android UX for saved Codex Mobile sessions across 
 ### 2. Session error while the app is active
 
 - The native error/session UI appears.
-- The status copy changes to `Trying to restore this session`.
-- The app attempts one automatic reconnect for the active session.
-- If that reconnect fails, the session page stays visible with manual retry controls.
+- The app clearly shows that the desktop bridge was lost and that reconnect is in progress.
+- The app keeps retrying the active session with backoff.
+- If the failure is unrecoverable, the session page stays visible with manual retry controls.
 
 ### 3. App sent to background and reopened while still connected
 
@@ -49,7 +49,7 @@ This note covers the expected Android UX for saved Codex Mobile sessions across 
 3. Confirm the app opens on the native session page and does not auto-connect.
 4. Open a saved session manually.
 5. Press Home, reopen the app from recents or launcher, and confirm the workspace is still present.
-6. Trigger or simulate a session load failure and confirm the session page shows `Trying to restore this session`, followed by one automatic reconnect attempt.
+6. Trigger or simulate a session load failure and confirm the session page shows that the bridge connection was lost, then continues automatic reconnect attempts with backoff.
 7. Press Back from the workspace to return to the native home screen.
 8. Kill the app process and relaunch it again.
 9. Confirm the app stays on the native home screen and does not auto-reconnect.
@@ -73,4 +73,4 @@ adb shell am force-stop com.boomyao.codexmobile
 - Cold launch now stays on the native session page instead of auto-opening the latest session.
 - Background and reopen while connected still returns to the live WebView.
 - Manual exit returns to the native home screen and keeps later cold launches on that page.
-- Automatic reconnect is now scoped to session-error handling rather than app launch.
+- Automatic reconnect is now scoped to session-error handling rather than app launch, and it keeps retrying while the failure looks recoverable.
