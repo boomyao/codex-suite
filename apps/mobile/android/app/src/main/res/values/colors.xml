@@ -1,9 +1,7 @@
 <resources>
   <color name="splashscreen_background">#ffffff</color>
   <color name="colorPrimary">#0E2337</color>
-  <color name="nativeHostWindowStart">#F5F8FD</color>
-  <color name="nativeHostWindowEnd">#E8EEF8</color>
-  <color name="nativeHostWindowSpotlight">#B8DBFF</color>
+  <color name="nativeHostBackground">#FFFFFF</color>
   <color name="nativeHostSurface">#FFFDFBFF</color>
   <color name="nativeHostSurfaceAlt">#E5ECF5</color>
   <color name="nativeHostTextPrimary">#132033</color>
@@ -14,11 +12,6 @@
   <color name="nativeHostDivider">#C8D4E4</color>
   <color name="nativeHostDividerStrong">#9BAAC0</color>
   <color name="nativeHostWebSurface">#F8FAFD</color>
-  <color name="nativeHostHeroStart">#F9FBFF</color>
-  <color name="nativeHostHeroEnd">#EEF4FF</color>
-  <color name="nativeHostHeroBorder">#C8D6E8</color>
-  <color name="nativeHostHeroBadgeSurface">#DCE8FF</color>
-  <color name="nativeHostHeroBadgeText">#2C558C</color>
   <color name="nativeHostChipNeutralBg">#DCE7FF</color>
   <color name="nativeHostChipNeutralText">#244073</color>
   <color name="nativeHostChipActiveBg">#CDEBFF</color>

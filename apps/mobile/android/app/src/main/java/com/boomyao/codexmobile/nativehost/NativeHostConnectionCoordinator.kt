@@ -2,6 +2,7 @@ package com.boomyao.codexmobile.nativehost
 
 import android.content.Context
 import com.boomyao.codexmobile.R
+import com.boomyao.codexmobile.shared.EnrollmentPayload
 import kotlin.concurrent.thread
 
 class NativeHostConnectionCoordinator(

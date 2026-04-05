@@ -2,31 +2,12 @@ package com.boomyao.codexmobile.nativehost
 
 import org.json.JSONObject
 
-data class BridgeProfile(
-    val id: String,
-    val bridgeId: String?,
-    val name: String,
-    val serverEndpoint: String,
-    val authToken: String?,
-    val lastUsedAtMillis: Long? = null,
-)
-
-data class ConnectionTargetResponse(
-    val bridgeId: String?,
-    val recommendedServerEndpoint: String,
-    val authMode: String,
-    val localAuthPage: String?,
-)
-
-data class PairingResponse(
-    val accessToken: String,
-    val approved: Boolean,
-)
-
-data class BridgeLoadTarget(
-    val baseUrl: String,
-    val usesLocalProxy: Boolean,
-)
+// Core models are in com.boomyao.codexmobile.shared.
+// Re-export them so existing imports keep working.
+typealias BridgeProfile = com.boomyao.codexmobile.shared.BridgeProfile
+typealias ConnectionTargetResponse = com.boomyao.codexmobile.shared.ConnectionTargetResponse
+typealias PairingResponse = com.boomyao.codexmobile.shared.PairingResponse
+typealias BridgeLoadTarget = com.boomyao.codexmobile.shared.BridgeLoadTarget
 
 data class HttpProxyResponse(
     val body: Any?,
@@ -42,12 +23,3 @@ data class BridgeBootstrapState(
     val pinnedThreadIds: List<String>,
     val globalState: Map<String, Any?>,
 )
-
-sealed class EnrollmentPayload {
-    data class Bridge(
-        val bridgeId: String?,
-        val name: String,
-        val serverEndpoint: String,
-        val pairingCode: String?,
-    ) : EnrollmentPayload()
-}

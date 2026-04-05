@@ -1,5 +1,6 @@
 package com.boomyao.codexmobile.nativehost
 
+import com.boomyao.codexmobile.shared.uniqueTrimmedStrings as sharedUniqueTrimmedStrings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -33,17 +34,7 @@ fun jsonObjectStringMap(value: JSONObject?): Map<String, String> {
     return result
 }
 
-fun uniqueTrimmedStrings(values: Iterable<String>): MutableList<String> {
-    val result = mutableListOf<String>()
-    val seen = linkedSetOf<String>()
-    values.forEach { value ->
-        val normalized = value.trim()
-        if (normalized.isNotEmpty() && seen.add(normalized)) {
-            result.add(normalized)
-        }
-    }
-    return result
-}
+fun uniqueTrimmedStrings(values: Iterable<String>): MutableList<String> = sharedUniqueTrimmedStrings(values)
 
 fun deepCopyJsonObject(value: JSONObject): JSONObject = JSONObject(value.toString())
 

@@ -2,15 +2,11 @@ package com.boomyao.codexmobile.nativehost
 
 import android.annotation.SuppressLint
 import android.content.Intent
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.content.res.Configuration
-import android.content.res.ColorStateList
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.ConsoleMessage
@@ -19,7 +15,6 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
@@ -29,10 +24,8 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import com.boomyao.codexmobile.R
-import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONArray
@@ -72,58 +65,26 @@ class NativeHostActivity : AppCompatActivity() {
         ERROR,
     }
 
-    private enum class ChipTone {
-        NEUTRAL,
-        ACTIVE,
-        SUCCESS,
-        WARNING,
-    }
-
     private lateinit var rootContainer: ViewGroup
-    private lateinit var toolbar: MaterialToolbar
-    private lateinit var contentContainer: View
-    private lateinit var sessionBarView: View
-    private lateinit var sessionNameView: TextView
-    private lateinit var sessionDetailView: TextView
-    private lateinit var sessionStateChipView: TextView
-    private lateinit var sessionActionButton: MaterialButton
-    private lateinit var progressIndicator: LinearProgressIndicator
-    private lateinit var workspaceFrameView: ViewGroup
-    private lateinit var webView: WebView
-    private lateinit var heroCardView: View
-    private lateinit var heroEyebrowView: TextView
-    private lateinit var stateChipView: TextView
-    private lateinit var statusView: TextView
-    private lateinit var emptyStateContainer: View
-    private lateinit var stateIconView: ImageView
-    private lateinit var emptyTitleView: TextView
-    private lateinit var emptyBodyView: TextView
-    private lateinit var runtimeDetailsView: View
-    private lateinit var runtimeLabelView: TextView
-    private lateinit var runtimeValueView: TextView
-    private lateinit var hintCardView: View
-    private lateinit var hintTitleView: TextView
-    private lateinit var hintBodyView: TextView
-    private lateinit var primaryActionButton: MaterialButton
-    private lateinit var secondaryActionButton: MaterialButton
+    private lateinit var disconnectedContentView: View
     private lateinit var settingsButton: MaterialButton
-    private lateinit var connectionButton: MaterialButton
-    private lateinit var workspaceMessageGroupView: View
-    private lateinit var workspaceMessageEyebrowView: TextView
-    private lateinit var workspaceIllustrationView: ImageView
-    private lateinit var welcomeSceneCardView: View
-    private lateinit var workspaceEmptyTitleView: TextView
-    private lateinit var workspaceEmptyBodyView: TextView
-    private lateinit var welcomePrimaryActionButton: MaterialButton
-    private lateinit var emptyStateContentView: LinearLayout
-    private lateinit var welcomeGuideCardView: View
-    private lateinit var welcomeGuideTitleView: TextView
-    private lateinit var welcomeGuideBodyView: TextView
-    private lateinit var recentSessionsSectionView: View
-    private lateinit var recentSessionsHeaderView: View
-    private lateinit var recentSessionsTitleView: TextView
-    private lateinit var recentSessionsBodyView: TextView
+    private lateinit var errorCardView: View
+    private lateinit var errorTitleView: TextView
+    private lateinit var errorBodyView: TextView
+    private lateinit var errorPrimaryActionButton: MaterialButton
+    private lateinit var errorSecondaryActionButton: MaterialButton
+    private lateinit var primaryScanButton: MaterialButton
+    private lateinit var savedSessionsSectionView: View
+    private lateinit var savedSessionsActionButton: MaterialButton
     private lateinit var recentSessionsListView: LinearLayout
+    private lateinit var webView: WebView
+    private lateinit var loadingOverlayView: View
+    private lateinit var loadingTitleView: TextView
+    private lateinit var loadingProfileView: TextView
+    private lateinit var reconnectOverlayView: View
+    private lateinit var reconnectStatusView: TextView
+    private lateinit var reconnectPrimaryActionButton: MaterialButton
+    private lateinit var reconnectSecondaryActionButton: MaterialButton
     private lateinit var profileStore: BridgeProfileStore
     private lateinit var preferencesStore: NativeHostPreferences
     private lateinit var connectionSheetController: NativeHostConnectionSheetController
@@ -159,10 +120,10 @@ class NativeHostActivity : AppCompatActivity() {
     private var autoReconnectProfileId: String? = null
     private var autoReconnectAttemptCount = 0
     private var autoReconnectRunnable: Runnable? = null
-    private var workspaceFrameMarginStart = 0
-    private var workspaceFrameMarginTop = 0
-    private var workspaceFrameMarginEnd = 0
-    private var workspaceFrameMarginBottom = 0
+    private var disconnectedPaddingTop = 0
+    private var disconnectedPaddingBottom = 0
+    private var webViewMarginTop = 0
+    private var webViewMarginBottom = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -171,50 +132,25 @@ class NativeHostActivity : AppCompatActivity() {
         rootContainer = findViewById(R.id.nativeHostRoot)
         profileStore = BridgeProfileStore(this)
         preferencesStore = NativeHostPreferences(this)
-        contentContainer = findViewById(R.id.nativeHostContent)
-        toolbar = findViewById(R.id.nativeHostToolbar)
-        sessionBarView = findViewById(R.id.nativeHostSessionBar)
-        sessionNameView = findViewById(R.id.nativeHostSessionName)
-        sessionDetailView = findViewById(R.id.nativeHostSessionDetail)
-        sessionStateChipView = findViewById(R.id.nativeHostSessionStateChip)
-        sessionActionButton = findViewById(R.id.nativeHostSessionAction)
-        progressIndicator = findViewById(R.id.nativeHostProgress)
-        workspaceFrameView = findViewById(R.id.nativeHostWorkspaceFrame)
-        webView = findViewById(R.id.nativeHostWebView)
-        heroCardView = findViewById(R.id.nativeHostHeroCard)
-        heroEyebrowView = findViewById(R.id.nativeHostHeroEyebrow)
-        stateChipView = findViewById(R.id.nativeHostStateChip)
-        statusView = findViewById(R.id.nativeHostStatus)
-        emptyStateContainer = findViewById(R.id.nativeHostEmptyState)
-        stateIconView = findViewById(R.id.nativeHostStateIcon)
-        emptyTitleView = findViewById(R.id.nativeHostEmptyTitle)
-        emptyBodyView = findViewById(R.id.nativeHostEmptyBody)
-        runtimeDetailsView = findViewById(R.id.nativeHostRuntimeDetails)
-        runtimeLabelView = findViewById(R.id.nativeHostRuntimeLabel)
-        runtimeValueView = findViewById(R.id.nativeHostRuntimeValue)
-        hintCardView = findViewById(R.id.nativeHostHintCard)
-        hintTitleView = findViewById(R.id.nativeHostHintTitle)
-        hintBodyView = findViewById(R.id.nativeHostHintBody)
-        primaryActionButton = findViewById(R.id.nativeHostPrimaryAction)
-        secondaryActionButton = findViewById(R.id.nativeHostSecondaryAction)
+        disconnectedContentView = findViewById(R.id.nativeHostDisconnectedContent)
         settingsButton = findViewById(R.id.nativeHostSettingsButton)
-        connectionButton = findViewById(R.id.nativeHostConnectionButton)
-        emptyStateContentView = findViewById(R.id.nativeHostEmptyStateContent)
-        workspaceMessageGroupView = findViewById(R.id.nativeHostWorkspaceMessageGroup)
-        workspaceMessageEyebrowView = findViewById(R.id.nativeHostWorkspaceMessageEyebrow)
-        workspaceIllustrationView = findViewById(R.id.nativeHostWorkspaceIllustration)
-        welcomeSceneCardView = findViewById(R.id.nativeHostWelcomeSceneCard)
-        workspaceEmptyTitleView = findViewById(R.id.nativeHostWorkspaceEmptyTitle)
-        workspaceEmptyBodyView = findViewById(R.id.nativeHostWorkspaceEmptyBody)
-        welcomePrimaryActionButton = findViewById(R.id.nativeHostWelcomePrimaryAction)
-        welcomeGuideCardView = findViewById(R.id.nativeHostWelcomeGuideCard)
-        welcomeGuideTitleView = findViewById(R.id.nativeHostWelcomeGuideTitle)
-        welcomeGuideBodyView = findViewById(R.id.nativeHostWelcomeGuideBody)
-        recentSessionsSectionView = findViewById(R.id.nativeHostRecentSessionsSection)
-        recentSessionsHeaderView = findViewById(R.id.nativeHostRecentSessionsHeader)
-        recentSessionsTitleView = findViewById(R.id.nativeHostRecentSessionsTitle)
-        recentSessionsBodyView = findViewById(R.id.nativeHostRecentSessionsBody)
+        errorCardView = findViewById(R.id.nativeHostErrorCard)
+        errorTitleView = findViewById(R.id.nativeHostErrorTitle)
+        errorBodyView = findViewById(R.id.nativeHostErrorBody)
+        errorPrimaryActionButton = findViewById(R.id.nativeHostErrorPrimaryAction)
+        errorSecondaryActionButton = findViewById(R.id.nativeHostErrorSecondaryAction)
+        primaryScanButton = findViewById(R.id.nativeHostPrimaryScanButton)
+        savedSessionsSectionView = findViewById(R.id.nativeHostSavedSessionsSection)
+        savedSessionsActionButton = findViewById(R.id.nativeHostSavedSessionsAction)
         recentSessionsListView = findViewById(R.id.nativeHostRecentSessionsList)
+        webView = findViewById(R.id.nativeHostWebView)
+        loadingOverlayView = findViewById(R.id.nativeHostLoadingOverlay)
+        loadingTitleView = findViewById(R.id.nativeHostLoadingTitle)
+        loadingProfileView = findViewById(R.id.nativeHostLoadingProfile)
+        reconnectOverlayView = findViewById(R.id.nativeHostReconnectOverlay)
+        reconnectStatusView = findViewById(R.id.nativeHostReconnectStatus)
+        reconnectPrimaryActionButton = findViewById(R.id.nativeHostReconnectPrimaryAction)
+        reconnectSecondaryActionButton = findViewById(R.id.nativeHostReconnectSecondaryAction)
         webViewMessageRouter =
             NativeHostWebviewMessageRouter(
                 activeProfileProvider = { activeProfile },
@@ -308,26 +244,20 @@ class NativeHostActivity : AppCompatActivity() {
                 syncSavedConnectionsState = ::syncSavedConnectionsState,
                 normalizeErrorMessage = ::normalizeErrorMessage,
             )
-        workspaceFrameView.clipToOutline = true
-        (workspaceFrameView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
-            workspaceFrameMarginStart = params.marginStart
-            workspaceFrameMarginTop = params.topMargin
-            workspaceFrameMarginEnd = params.marginEnd
-            workspaceFrameMarginBottom = params.bottomMargin
+        disconnectedPaddingTop = disconnectedContentView.paddingTop
+        disconnectedPaddingBottom = disconnectedContentView.paddingBottom
+        (webView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
+            webViewMarginTop = params.topMargin
+            webViewMarginBottom = params.bottomMargin
         }
 
-        primaryActionButton.setOnClickListener { handlePrimaryAction() }
-        secondaryActionButton.setOnClickListener { handleSecondaryAction() }
         settingsButton.setOnClickListener { openThemeSettings() }
-        welcomePrimaryActionButton.setOnClickListener { openScanner() }
-        connectionButton.setOnClickListener {
-            if (chromeState == ShellChromeState.DISCONNECTED) {
-                openScanner()
-            } else {
-                openConnectionSheet()
-            }
-        }
-        sessionActionButton.setOnClickListener { openConnectionSheet() }
+        primaryScanButton.setOnClickListener { openScanner() }
+        savedSessionsActionButton.setOnClickListener { openConnectionSheet() }
+        errorPrimaryActionButton.setOnClickListener { handlePrimaryAction() }
+        errorSecondaryActionButton.setOnClickListener { openConnectionSheet() }
+        reconnectPrimaryActionButton.setOnClickListener { reloadActiveBridge() }
+        reconnectSecondaryActionButton.setOnClickListener { openConnectionSheet() }
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
@@ -363,36 +293,33 @@ class NativeHostActivity : AppCompatActivity() {
     }
 
     private fun applyWindowInsets() {
-        val contentPaddingTop = contentContainer.paddingTop
-        val buttonLayoutParams = connectionButton.layoutParams as ViewGroup.MarginLayoutParams
-        val buttonBottomMargin = buttonLayoutParams.bottomMargin
-        ViewCompat.setOnApplyWindowInsetsListener(contentContainer) { view, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(rootContainer) { _, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.updatePadding(top = contentPaddingTop + systemBars.top)
-            (connectionButton.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
-                params.bottomMargin = buttonBottomMargin + systemBars.bottom
-                connectionButton.layoutParams = params
+            disconnectedContentView.updatePadding(
+                top = disconnectedPaddingTop + systemBars.top,
+                bottom = disconnectedPaddingBottom + systemBars.bottom,
+            )
+            (webView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
+                params.topMargin = webViewMarginTop + systemBars.top
+                params.bottomMargin = webViewMarginBottom + systemBars.bottom
+                webView.layoutParams = params
             }
             insets
         }
-        ViewCompat.requestApplyInsets(contentContainer)
+        ViewCompat.requestApplyInsets(rootContainer)
     }
 
     private fun applyWindowBackgroundMode(connected: Boolean) {
-        if (connected) {
-            val backgroundColor =
-                ContextCompat.getColor(
-                    this,
-                    if (resolveThemeVariant() == "dark") {
-                        R.color.nativeHostWebSurface
-                    } else {
-                        android.R.color.white
-                    },
-                )
-            rootContainer.setBackgroundColor(backgroundColor)
-        } else {
-            rootContainer.setBackgroundResource(R.drawable.bg_native_host_window)
-        }
+        rootContainer.setBackgroundColor(
+            ContextCompat.getColor(
+                this,
+                if (connected) {
+                    R.color.nativeHostWebSurface
+                } else {
+                    R.color.nativeHostBackground
+                },
+            ),
+        )
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -602,9 +529,32 @@ class NativeHostActivity : AppCompatActivity() {
 
     private fun setStatus(message: String) {
         currentStatusMessage = message
-        statusView.text = message
-        if (sessionBarView.visibility == View.VISIBLE) {
-            sessionDetailView.text = message
+        when (chromeState) {
+            ShellChromeState.LOADING -> updateLoadingOverlay(activeProfile)
+            ShellChromeState.ERROR -> {
+                if (reconnectOverlayView.visibility == View.VISIBLE) {
+                    reconnectStatusView.text =
+                        NativeHostSessionUi.summarizeWorkspaceError(
+                            context = this,
+                            message = message,
+                            isAutoReconnectPending = true,
+                        )
+                } else if (errorCardView.visibility == View.VISIBLE) {
+                    errorTitleView.text =
+                        NativeHostSessionUi.workspaceErrorTitle(
+                            context = this,
+                            message = message,
+                        )
+                    errorBodyView.text =
+                        NativeHostSessionUi.summarizeWorkspaceError(
+                            context = this,
+                            message = message,
+                        )
+                }
+            }
+            ShellChromeState.CONNECTED,
+            ShellChromeState.DISCONNECTED,
+            -> Unit
         }
     }
 
@@ -714,15 +664,6 @@ class NativeHostActivity : AppCompatActivity() {
         }
     }
 
-    private fun compactLabel(value: String, maxLength: Int = 28): String {
-        val trimmed = value.trim()
-        return if (trimmed.length <= maxLength) {
-            trimmed
-        } else {
-            trimmed.take(maxLength - 1).trimEnd() + "…"
-        }
-    }
-
     private fun resolveThemeVariant(): String {
         return when (preferencesStore.readThemeMode()) {
             ThemeMode.LIGHT -> "light"
@@ -776,150 +717,36 @@ class NativeHostActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun summarizeWorkspaceError(message: String): String {
-        val normalized = message.trim()
-        return when {
-            normalized.contains("expired", ignoreCase = true) ->
-                "This setup code expired before the workspace opened."
-            normalized.isBlank() ->
-                getString(R.string.native_host_workspace_error_body)
-            else -> compactLabel(normalized, maxLength = 90)
+    private fun clearConnectionProgress() {
+        currentConnectionStage = null
+        currentConnectionRequiresPairing = false
+    }
+
+    private fun connectionStageLabel(stage: NativeHostConnectionStage?): String {
+        return when (stage) {
+            NativeHostConnectionStage.PAYLOAD_RECEIVED -> getString(R.string.native_host_status_payload_received)
+            NativeHostConnectionStage.PAIRING_DEVICE -> getString(R.string.native_host_status_pairing_device)
+            NativeHostConnectionStage.OPENING_WORKSPACE,
+            null,
+            -> getString(R.string.native_host_status_opening_workspace)
         }
     }
 
-    private fun updateHintCard(titleResId: Int, bodyResId: Int) {
-        hintTitleView.text = getString(titleResId)
-        hintBodyView.text = getString(bodyResId)
-    }
-
-    private fun updateWorkspacePreview(titleResId: Int, bodyResId: Int) {
-        workspaceEmptyTitleView.text = getString(titleResId)
-        workspaceEmptyBodyView.text = getString(bodyResId)
-    }
-
-    private fun applyChipTone(view: TextView, tone: ChipTone) {
-        val (backgroundColorRes, textColorRes) =
-            when (tone) {
-                ChipTone.NEUTRAL -> R.color.nativeHostChipNeutralBg to R.color.nativeHostChipNeutralText
-                ChipTone.ACTIVE -> R.color.nativeHostChipActiveBg to R.color.nativeHostChipActiveText
-                ChipTone.SUCCESS -> R.color.nativeHostChipSuccessBg to R.color.nativeHostChipSuccessText
-                ChipTone.WARNING -> R.color.nativeHostChipWarningBg to R.color.nativeHostChipWarningText
-            }
-        (view.background?.mutate() as? GradientDrawable)?.setColor(
-            ContextCompat.getColor(this, backgroundColorRes),
-        )
-        view.setTextColor(ContextCompat.getColor(this, textColorRes))
-    }
-
-    private fun updateStateChip(labelResId: Int, tone: ChipTone) {
-        stateChipView.text = getString(labelResId)
-        applyChipTone(stateChipView, tone)
-    }
-
-    private fun updateRuntimeCard(labelResId: Int, value: String) {
-        runtimeDetailsView.visibility = View.VISIBLE
-        runtimeLabelView.text = getString(labelResId)
-        runtimeValueView.text = value
-    }
-
-    private fun showSessionBar(
-        profile: BridgeProfile,
-        stateLabelResId: Int,
-        tone: ChipTone,
-        detail: String = currentStatusMessage.ifBlank { connectionSheetController.displayProfileDetail(profile) },
-        showAction: Boolean = true,
-    ) {
-        sessionBarView.visibility = View.VISIBLE
-        sessionNameView.text = connectionSheetController.displayProfileLabel(profile)
-        sessionDetailView.text = detail.ifBlank { connectionSheetController.displayProfileDetail(profile) }
-        sessionStateChipView.text = getString(stateLabelResId)
-        applyChipTone(sessionStateChipView, tone)
-        sessionActionButton.visibility = if (showAction) View.VISIBLE else View.GONE
-    }
-
-    private fun hideSessionBar() {
-        sessionBarView.visibility = View.GONE
-        sessionActionButton.visibility = View.VISIBLE
-    }
-
-    private fun updateWorkspaceMessage(
-        eyebrowResId: Int,
-        titleResId: Int,
-        bodyResId: Int,
-        showIllustration: Boolean = true,
-    ) {
-        workspaceMessageGroupView.visibility = View.VISIBLE
-        workspaceMessageEyebrowView.visibility = View.VISIBLE
-        workspaceMessageEyebrowView.text = getString(eyebrowResId)
-        workspaceEmptyTitleView.text = getString(titleResId)
-        workspaceEmptyBodyView.text = getString(bodyResId)
-        workspaceIllustrationView.visibility = if (showIllustration) View.VISIBLE else View.GONE
-    }
-
-    private fun configureWelcomeState(enabled: Boolean) {
-        emptyStateContentView.gravity =
-            if (enabled) {
-                Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
-            } else {
-                Gravity.NO_GRAVITY
-            }
-        welcomeGuideCardView.visibility = if (enabled) View.VISIBLE else View.GONE
-        welcomeGuideTitleView.text = getString(R.string.native_host_welcome_guide_title)
-        welcomeGuideBodyView.text = getString(R.string.native_host_welcome_guide_body)
-        welcomeSceneCardView.visibility = if (enabled) View.VISIBLE else View.GONE
-        welcomePrimaryActionButton.visibility = if (enabled) View.VISIBLE else View.GONE
-
-        if (enabled) {
-            welcomePrimaryActionButton.text = getString(R.string.native_host_empty_action_start)
-        } else {
-            connectionButton.text = getString(R.string.native_host_empty_action)
-            connectionButton.setTextColor(ContextCompat.getColor(this, R.color.nativeHostTextPrimary))
-            connectionButton.backgroundTintList =
-                ColorStateList.valueOf(ContextCompat.getColor(this, R.color.nativeHostSurface))
-            connectionButton.strokeWidth = (resources.displayMetrics.density).toInt()
-            connectionButton.strokeColor =
-                ColorStateList.valueOf(ContextCompat.getColor(this, R.color.nativeHostDividerStrong))
-            connectionButton.iconTint = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.nativeHostAccent))
-        }
-    }
-
-    private fun renderRecentSessionsSection(
-        activeProfileId: String?,
-        bodyResId: Int,
-        showBody: Boolean = true,
-        showTitle: Boolean = true,
-        transientProfile: BridgeProfile? = null,
-    ): Boolean {
-        val savedProfiles = profileStore.list()
-        val profiles =
-            buildList {
-                transientProfile?.let { pendingProfile ->
-                    if (savedProfiles.none { it.id == pendingProfile.id }) {
-                        add(pendingProfile)
-                    }
-                }
-                addAll(savedProfiles)
-            }
-        recentSessionsHeaderView.visibility = if (showTitle && profiles.isNotEmpty()) View.VISIBLE else View.GONE
-        recentSessionsBodyView.visibility = if (showBody && profiles.isNotEmpty()) View.VISIBLE else View.GONE
-        recentSessionsBodyView.text = getString(bodyResId)
-        (recentSessionsListView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
-            params.topMargin =
-                when {
-                    showBody && profiles.isNotEmpty() -> (14 * resources.displayMetrics.density).toInt()
-                    showTitle && profiles.isNotEmpty() -> (10 * resources.displayMetrics.density).toInt()
-                    else -> 0
-                }
-            recentSessionsListView.layoutParams = params
-        }
-        recentSessionsListView.removeAllViews()
-
+    private fun renderSavedSessions(activeProfileId: String?) {
+        val profiles = profileStore.list()
         if (profiles.isEmpty()) {
-            recentSessionsSectionView.visibility = View.GONE
-            return false
+            savedSessionsSectionView.visibility = View.GONE
+            recentSessionsListView.removeAllViews()
+            return
         }
 
-        recentSessionsSectionView.visibility = View.VISIBLE
+        savedSessionsSectionView.visibility = View.VISIBLE
+        savedSessionsActionButton.visibility =
+            if (profiles.size > HOME_SESSION_LIMIT) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
         connectionSheetController.renderConnectionCards(
             container = recentSessionsListView,
             profiles = profiles.take(HOME_SESSION_LIMIT),
@@ -927,68 +754,12 @@ class NativeHostActivity : AppCompatActivity() {
         ) { profile ->
             activateProfile(profile)
         }
-        return true
     }
 
-    private fun renderRecentSessions(
-        activeProfileId: String?,
-        bodyResId: Int,
-        showMessageWhenEmpty: Boolean,
-        showBody: Boolean = true,
-        showTitle: Boolean = true,
-    ) {
-        val hasProfiles = renderRecentSessionsSection(activeProfileId, bodyResId, showBody, showTitle)
-        workspaceMessageGroupView.visibility =
-            when {
-                hasProfiles -> View.GONE
-                showMessageWhenEmpty -> View.VISIBLE
-                else -> View.GONE
-            }
-    }
-
-    private fun showDisconnectedSupportingViews() {
-        stateIconView.visibility = View.VISIBLE
-        updateRuntimeCard(R.string.native_host_runtime_label_saved, connectionSheetController.savedConnectionsSummary())
-        hintCardView.visibility = View.VISIBLE
-    }
-
-    private fun showRuntimeSupportingViews(labelResId: Int, value: String) {
-        stateIconView.visibility = View.GONE
-        updateRuntimeCard(labelResId, value)
-        hintCardView.visibility = View.VISIBLE
-    }
-
-    private fun clearConnectionProgress() {
-        currentConnectionStage = null
-        currentConnectionRequiresPairing = false
-    }
-
-    private fun setWorkspaceFrameMode(fullScreen: Boolean) {
-        (workspaceFrameView.layoutParams as? ViewGroup.MarginLayoutParams)?.let { params ->
-            if (fullScreen) {
-                params.marginStart = 0
-                params.topMargin = 0
-                params.marginEnd = 0
-                params.bottomMargin = 0
-            } else {
-                params.marginStart = workspaceFrameMarginStart
-                params.topMargin = workspaceFrameMarginTop
-                params.marginEnd = workspaceFrameMarginEnd
-                params.bottomMargin = workspaceFrameMarginBottom
-            }
-            workspaceFrameView.layoutParams = params
-        }
-        if (fullScreen) {
-            workspaceFrameView.background = null
-            workspaceFrameView.elevation = 0f
-            workspaceFrameView.clipToOutline = false
-            workspaceFrameView.outlineProvider = null
-        } else {
-            workspaceFrameView.setBackgroundResource(R.drawable.bg_native_host_surface)
-            workspaceFrameView.elevation = 6f * resources.displayMetrics.density
-            workspaceFrameView.clipToOutline = true
-            workspaceFrameView.outlineProvider = ViewOutlineProvider.BACKGROUND
-        }
+    private fun updateLoadingOverlay(profile: BridgeProfile?) {
+        loadingTitleView.text = currentStatusMessage.ifBlank { connectionStageLabel(currentConnectionStage) }
+        loadingProfileView.text = profile?.let(NativeHostSessionUi::displayProfileLabel).orEmpty()
+        loadingProfileView.visibility = if (profile == null) View.GONE else View.VISIBLE
     }
 
     private fun updateConnectionProgress(
@@ -1010,217 +781,97 @@ class NativeHostActivity : AppCompatActivity() {
         )
     }
 
-    private fun buildConnectionProgressSummary(
-        stage: NativeHostConnectionStage,
-        requiresPairing: Boolean,
-    ): String {
-        val steps =
-            buildList {
-                add(NativeHostConnectionStage.PAYLOAD_RECEIVED to getString(R.string.native_host_progress_step_payload))
-                if (requiresPairing) {
-                    add(NativeHostConnectionStage.PAIRING_DEVICE to getString(R.string.native_host_progress_step_pairing))
-                }
-                add(NativeHostConnectionStage.OPENING_WORKSPACE to getString(R.string.native_host_progress_step_workspace))
-            }
-        val activeIndex = steps.indexOfFirst { it.first == stage }.coerceAtLeast(0)
-        val timeline =
-            steps.mapIndexed { index, (_, label) ->
-                when {
-                    index < activeIndex -> "Done  $label"
-                    index == activeIndex -> "Now   $label"
-                    else -> "Next  $label"
-                }
-            }.joinToString("\n")
-        return timeline
+    private fun hasLoadedWebView(): Boolean {
+        val url = webView.url
+        return !url.isNullOrBlank() && url != "about:blank"
     }
 
     private fun renderDisconnectedChrome(message: String) {
         resetAutoReconnectState()
         clearConnectionProgress()
         chromeState = ShellChromeState.DISCONNECTED
-        workspaceFrameView.visibility = View.VISIBLE
-        setWorkspaceFrameMode(fullScreen = false)
         applyWindowBackgroundMode(connected = false)
-        toolbar.visibility = View.GONE
-        settingsButton.visibility = View.VISIBLE
-        hideSessionBar()
         activeLoadTarget = null
-        val hasSavedProfiles = profileStore.list().isNotEmpty()
-        heroCardView.visibility = View.GONE
-        progressIndicator.visibility = View.GONE
-        emptyStateContainer.visibility = View.VISIBLE
-        stateIconView.visibility = if (hasSavedProfiles) View.GONE else View.VISIBLE
-        configureWelcomeState(enabled = !hasSavedProfiles)
-        if (hasSavedProfiles) {
-            updateWorkspaceMessage(
-                R.string.native_host_workspace_preview_eyebrow,
-                R.string.native_host_workspace_preview_title,
-                R.string.native_host_workspace_preview_body,
-                showIllustration = false,
-            )
-        } else {
-            updateWorkspaceMessage(
-                R.string.native_host_workspace_welcome_eyebrow,
-                R.string.native_host_workspace_welcome_title,
-                R.string.native_host_workspace_welcome_body,
-                showIllustration = false,
-            )
-            workspaceMessageEyebrowView.visibility = View.GONE
-        }
-        renderRecentSessions(
-            activeProfileId = profileStore.readActive()?.id,
-            bodyResId =
-                if (hasSavedProfiles) {
-                    R.string.native_host_recent_sessions_saved_body
-                } else {
-                    R.string.native_host_recent_sessions_body
-                },
-            showMessageWhenEmpty = true,
-            showBody = !hasSavedProfiles,
-        )
-        runtimeDetailsView.visibility = View.GONE
-        hintCardView.visibility = View.GONE
-        primaryActionButton.visibility = View.GONE
-        secondaryActionButton.visibility = View.GONE
+        disconnectedContentView.visibility = View.VISIBLE
+        errorCardView.visibility = View.GONE
+        loadingOverlayView.visibility = View.GONE
+        reconnectOverlayView.visibility = View.GONE
         webView.loadUrl("about:blank")
         webView.visibility = View.GONE
-        connectionButton.visibility = View.VISIBLE
-        statusView.text = message
+        renderSavedSessions(activeProfileId = profileStore.readActive()?.id)
+        currentStatusMessage = message
     }
 
     private fun renderLoadingChrome(profile: BridgeProfile) {
         chromeState = ShellChromeState.LOADING
-        workspaceFrameView.visibility = View.VISIBLE
-        setWorkspaceFrameMode(fullScreen = false)
-        applyWindowBackgroundMode(connected = false)
-        toolbar.visibility = View.GONE
-        settingsButton.visibility = View.VISIBLE
-        hideSessionBar()
-        heroCardView.visibility = View.GONE
-        progressIndicator.visibility = View.GONE
-        emptyStateContainer.visibility = View.VISIBLE
-        configureWelcomeState(enabled = false)
-        updateWorkspaceMessage(
-            R.string.native_host_loading_eyebrow,
-            R.string.native_host_loading_title,
-            R.string.native_host_loading_body,
-            showIllustration = false,
-        )
-        welcomeSceneCardView.visibility = View.GONE
-        welcomePrimaryActionButton.visibility = View.GONE
-        welcomeGuideCardView.visibility = View.VISIBLE
-        welcomeGuideTitleView.text = getString(R.string.native_host_loading_progress_title)
-        welcomeGuideBodyView.text =
-            buildConnectionProgressSummary(
-                currentConnectionStage ?: NativeHostConnectionStage.OPENING_WORKSPACE,
-                currentConnectionRequiresPairing,
-            )
-        runtimeDetailsView.visibility = View.GONE
-        hintCardView.visibility = View.GONE
-        renderRecentSessionsSection(
-            activeProfileId = profile.id,
-            bodyResId = R.string.native_host_recent_sessions_loading_body,
-            showBody = false,
-            showTitle = false,
-            transientProfile = profile,
-        )
-        primaryActionButton.visibility = View.GONE
-        secondaryActionButton.visibility = View.GONE
-        webView.visibility = View.GONE
-        connectionButton.visibility = View.GONE
+        applyWindowBackgroundMode(connected = hasLoadedWebView())
+        disconnectedContentView.visibility = View.GONE
+        errorCardView.visibility = View.GONE
+        loadingOverlayView.visibility = View.VISIBLE
+        reconnectOverlayView.visibility = View.GONE
+        webView.visibility = if (hasLoadedWebView()) View.VISIBLE else View.GONE
+        updateLoadingOverlay(profile)
     }
 
     private fun renderConnectedChrome(profile: BridgeProfile) {
         resetAutoReconnectState()
         clearConnectionProgress()
         chromeState = ShellChromeState.CONNECTED
-        workspaceFrameView.visibility = View.VISIBLE
-        setWorkspaceFrameMode(fullScreen = true)
         applyWindowBackgroundMode(connected = true)
-        toolbar.visibility = View.GONE
-        settingsButton.visibility = View.GONE
-        hideSessionBar()
-        heroCardView.visibility = View.GONE
-        updateStateChip(R.string.native_host_state_live, ChipTone.SUCCESS)
-        progressIndicator.visibility = View.GONE
-        emptyStateContainer.visibility = View.GONE
-        runtimeDetailsView.visibility = View.GONE
-        hintCardView.visibility = View.GONE
-        primaryActionButton.visibility = View.GONE
-        secondaryActionButton.visibility = View.GONE
+        disconnectedContentView.visibility = View.GONE
+        errorCardView.visibility = View.GONE
+        loadingOverlayView.visibility = View.GONE
+        reconnectOverlayView.visibility = View.GONE
         webView.visibility = View.VISIBLE
-        connectionButton.visibility = View.GONE
-        toolbar.title = connectionSheetController.displayProfileLabel(profile)
     }
 
     private fun renderWorkspaceErrorChrome(profile: BridgeProfile, message: String) {
         clearConnectionProgress()
         chromeState = ShellChromeState.ERROR
         currentStatusMessage = message
-        workspaceFrameView.visibility = View.GONE
-        setWorkspaceFrameMode(fullScreen = false)
-        applyWindowBackgroundMode(connected = false)
         activeLoadTarget = null
-        toolbar.visibility = View.VISIBLE
-        settingsButton.visibility = View.VISIBLE
-        toolbar.title = connectionSheetController.displayProfileLabel(profile)
-        toolbar.subtitle = null
-        hideSessionBar()
-        heroCardView.visibility = View.VISIBLE
-        stateIconView.visibility = View.GONE
         val reconnecting = shouldAutoReconnect(profile, message)
-        heroEyebrowView.text =
-            getString(
-                if (reconnecting) {
-                    R.string.native_host_hero_eyebrow_reconnecting
-                } else {
-                    R.string.native_host_hero_eyebrow_error
-                },
+        applyWindowBackgroundMode(connected = reconnecting && hasLoadedWebView())
+        loadingOverlayView.visibility = View.GONE
+
+        if (reconnecting) {
+            disconnectedContentView.visibility = View.GONE
+            errorCardView.visibility = View.GONE
+            reconnectOverlayView.visibility = View.VISIBLE
+            reconnectStatusView.text =
+                NativeHostSessionUi.summarizeWorkspaceError(
+                    context = this,
+                    message = message,
+                    isAutoReconnectPending = true,
+                )
+            webView.visibility = if (hasLoadedWebView()) View.VISIBLE else View.GONE
+            maybeScheduleAutoReconnect(profile)
+            return
+        }
+
+        reconnectOverlayView.visibility = View.GONE
+        disconnectedContentView.visibility = View.VISIBLE
+        errorCardView.visibility = View.VISIBLE
+        errorTitleView.text =
+            NativeHostSessionUi.workspaceErrorTitle(
+                context = this,
+                message = message,
             )
-        updateStateChip(
-            if (reconnecting) {
-                R.string.native_host_state_reconnecting
-            } else {
-                R.string.native_host_state_attention
-            },
-            if (reconnecting) ChipTone.ACTIVE else ChipTone.WARNING,
-        )
-        progressIndicator.visibility = View.GONE
-        emptyStateContainer.visibility = View.GONE
-        configureWelcomeState(enabled = false)
-        emptyTitleView.text =
-            getString(
-                if (reconnecting) {
-                    R.string.native_host_workspace_reconnecting
-                } else {
-                    R.string.native_host_workspace_error
-                },
+        errorBodyView.text =
+            NativeHostSessionUi.summarizeWorkspaceError(
+                context = this,
+                message = message,
             )
-        emptyBodyView.text =
+        errorPrimaryActionButton.text =
             getString(
-                if (reconnecting) {
-                    R.string.native_host_workspace_reconnecting_body
-                } else {
-                    R.string.native_host_workspace_error_body
-                },
-            )
-        statusView.text = summarizeWorkspaceError(message)
-        runtimeDetailsView.visibility = View.GONE
-        hintCardView.visibility = View.GONE
-        primaryActionButton.visibility = View.VISIBLE
-        primaryActionButton.text =
-            getString(
-                if (reconnecting) {
-                    R.string.native_host_retry_now_action
+                if (profile.id == "pending-error") {
+                    R.string.native_host_sheet_action_scan
                 } else {
                     R.string.native_host_retry_action
                 },
             )
-        secondaryActionButton.visibility = View.VISIBLE
-        secondaryActionButton.text = getString(R.string.native_host_secondary_action_manage)
         webView.visibility = View.GONE
-        connectionButton.visibility = View.GONE
-        maybeScheduleAutoReconnect(profile)
+        renderSavedSessions(activeProfileId = profile.id)
     }
 
     private fun handlePrimaryAction() {
@@ -1234,16 +885,6 @@ class NativeHostActivity : AppCompatActivity() {
                 }
             ShellChromeState.LOADING -> Unit
             ShellChromeState.CONNECTED -> openConnectionSheet()
-        }
-    }
-
-    private fun handleSecondaryAction() {
-        when (chromeState) {
-            ShellChromeState.DISCONNECTED -> openConnectionSheet()
-            ShellChromeState.LOADING,
-            ShellChromeState.CONNECTED,
-            ShellChromeState.ERROR,
-            -> openConnectionSheet()
         }
     }
 

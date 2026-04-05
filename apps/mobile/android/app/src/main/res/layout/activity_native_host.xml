@@ -5,757 +5,310 @@
     android:id="@+id/nativeHostRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_native_host_window"
+    android:background="@color/nativeHostBackground"
     tools:ignore="UselessParent">
 
-    <LinearLayout
-        android:id="@+id/nativeHostContent"
+    <WebView
+        android:id="@+id/nativeHostWebView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:orientation="vertical">
+        android:background="@color/nativeHostWebSurface"
+        android:visibility="gone" />
 
-        <com.google.android.material.appbar.MaterialToolbar
-            android:id="@+id/nativeHostToolbar"
+    <LinearLayout
+        android:id="@+id/nativeHostDisconnectedContent"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="20dp">
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@android:color/transparent"
-            android:paddingStart="12dp"
-            android:paddingTop="10dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="4dp"
-            app:subtitle="@string/native_host_subtitle_default"
-            app:subtitleTextColor="@color/nativeHostTextSecondary"
-            app:title="@string/native_host_title"
-            app:titleTextColor="@color/nativeHostTextPrimary" />
+            android:gravity="end">
 
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/nativeHostSessionBar"
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/nativeHostSettingsButton"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:padding="0dp"
+                app:icon="@drawable/ic_native_host_settings"
+                app:iconGravity="textStart"
+                app:iconPadding="0dp"
+                app:iconTint="@color/nativeHostTextSecondary" />
+        </LinearLayout>
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:id="@+id/nativeHostCenterContent"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
-            android:layout_marginTop="6dp"
-            android:layout_marginEnd="16dp"
-            android:visibility="gone"
-            app:cardBackgroundColor="@color/nativeHostSurface"
-            app:cardCornerRadius="24dp"
-            app:cardElevation="0dp"
-            app:strokeColor="@color/nativeHostDivider"
-            app:strokeWidth="1dp">
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
 
-            <LinearLayout
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/nativeHostErrorCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:baselineAligned="false"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="16dp"
-                android:paddingTop="14dp"
-                android:paddingEnd="16dp"
-                android:paddingBottom="14dp">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:id="@+id/nativeHostSessionLabel"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/native_host_session_label"
-                        android:textColor="@color/nativeHostTextSecondary"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/nativeHostSessionName"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:textColor="@color/nativeHostTextPrimary"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/nativeHostSessionDetail"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:textColor="@color/nativeHostTextSecondary"
-                        android:textSize="12sp" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="12dp"
-                    android:gravity="end"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:id="@+id/nativeHostSessionStateChip"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_gravity="end"
-                        android:background="@drawable/bg_native_host_state_chip"
-                        android:paddingStart="12dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="12dp"
-                        android:paddingBottom="6dp"
-                        android:text="@string/native_host_state_ready"
-                        android:textColor="@color/nativeHostChipNeutralText"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/nativeHostSessionAction"
-                        style="@style/Widget.MaterialComponents.Button.TextButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_gravity="end"
-                        android:minWidth="0dp"
-                        android:text="@string/native_host_session_action"
-                        android:textAllCaps="false"
-                        android:textColor="@color/nativeHostAccent" />
-                </LinearLayout>
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <com.google.android.material.progressindicator.LinearProgressIndicator
-            android:id="@+id/nativeHostProgress"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="20dp"
-            android:layout_marginTop="8dp"
-            android:layout_marginEnd="20dp"
-            android:indeterminate="true"
-            android:visibility="gone"
-            app:indicatorColor="@color/nativeHostAccent"
-            app:trackColor="@color/nativeHostAccentMuted" />
-
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/nativeHostHeroCard"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="16dp"
-            android:layout_marginTop="12dp"
-            android:layout_marginEnd="16dp"
-            app:cardBackgroundColor="@color/nativeHostSurface"
-            app:cardCornerRadius="30dp"
-            app:cardElevation="0dp"
-            app:strokeColor="@color/nativeHostDivider"
-            app:strokeWidth="1dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
+                android:layout_marginBottom="20dp"
+                android:visibility="gone"
+                app:cardBackgroundColor="@color/nativeHostSurface"
+                app:cardCornerRadius="18dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/nativeHostDivider"
+                app:strokeWidth="1dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_native_host_hero_header"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingStart="18dp"
-                    android:paddingTop="16dp"
-                    android:paddingEnd="18dp"
-                    android:paddingBottom="16dp">
-
-                    <LinearLayout
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_native_host_badge"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal"
-                        android:paddingStart="10dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="10dp"
-                        android:paddingBottom="6dp">
-
-                        <View
-                            android:layout_width="8dp"
-                            android:layout_height="8dp"
-                            android:background="@drawable/bg_native_host_badge_dot" />
-
-                        <TextView
-                            android:id="@+id/nativeHostHeroEyebrow"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="8dp"
-                            android:text="@string/native_host_hero_eyebrow_idle"
-                            android:textColor="@color/nativeHostHeroBadgeText"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="0dp"
-                        android:layout_height="1dp"
-                        android:layout_weight="1" />
-
-                    <TextView
-                        android:id="@+id/nativeHostStateChip"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_native_host_state_chip"
-                        android:paddingStart="12dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="12dp"
-                        android:paddingBottom="6dp"
-                        android:text="@string/native_host_state_ready"
-                        android:textColor="@color/nativeHostChipNeutralText"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:background="@drawable/bg_native_host_hero"
+                    android:gravity="center_horizontal"
                     android:orientation="vertical"
-                    android:paddingStart="18dp"
+                    android:paddingStart="20dp"
                     android:paddingTop="20dp"
-                    android:paddingEnd="18dp"
+                    android:paddingEnd="20dp"
                     android:paddingBottom="18dp">
 
-                    <ImageView
-                        android:id="@+id/nativeHostStateIcon"
-                        android:layout_width="64dp"
-                        android:layout_height="64dp"
-                        android:alpha="0.92"
-                        android:contentDescription="@string/app_name"
-                        android:src="@drawable/splashscreen_logo" />
-
                     <TextView
-                        android:id="@+id/nativeHostEmptyTitle"
+                        android:id="@+id/nativeHostErrorTitle"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="18dp"
-                        android:text="@string/native_host_empty_title"
+                        android:gravity="center"
                         android:textColor="@color/nativeHostTextPrimary"
-                        android:textSize="24sp"
-                        android:textStyle="bold" />
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        tools:text="Couldn't open workspace" />
 
                     <TextView
-                        android:id="@+id/nativeHostEmptyBody"
+                        android:id="@+id/nativeHostErrorBody"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
-                        android:lineSpacingExtra="3dp"
-                        android:text="@string/native_host_empty_body"
+                        android:layout_marginTop="8dp"
+                        android:gravity="center"
+                        android:lineSpacingExtra="2dp"
                         android:textColor="@color/nativeHostTextSecondary"
-                        android:textSize="14sp" />
+                        android:textSize="13sp"
+                        tools:text="Retry, choose another saved session, or scan a fresh desktop QR code." />
 
-                    <TextView
-                        android:id="@+id/nativeHostStatus"
-                        android:layout_width="match_parent"
+                    <LinearLayout
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="14dp"
-                        android:text="@string/native_host_status_idle"
-                        android:textColor="@color/nativeHostTextPrimary"
-                        android:textSize="14sp"
-                        android:textStyle="bold" />
-
-                    <LinearLayout
-                        android:id="@+id/nativeHostRuntimeDetails"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="18dp"
-                        android:background="@drawable/bg_native_host_subtle"
-                        android:orientation="vertical"
-                        android:padding="14dp"
-                        android:visibility="gone">
-
-                        <TextView
-                            android:id="@+id/nativeHostRuntimeLabel"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/native_host_runtime_label_endpoint"
-                            android:textColor="@color/nativeHostTextSecondary"
-                            android:textSize="11sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/nativeHostRuntimeValue"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="8dp"
-                            android:textColor="@color/nativeHostTextPrimary"
-                            android:textSize="13sp"
-                            android:lineSpacingExtra="2dp" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:id="@+id/nativeHostHintCard"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:background="@drawable/bg_native_host_subtle"
-                        android:orientation="vertical"
-                        android:padding="14dp">
-
-                        <TextView
-                            android:id="@+id/nativeHostHintTitle"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:text="@string/native_host_hint_idle_title"
-                            android:textColor="@color/nativeHostTextPrimary"
-                            android:textSize="13sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/nativeHostHintBody"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:text="@string/native_host_hint_idle_body"
-                            android:textColor="@color/nativeHostTextSecondary"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="18dp"
+                        android:gravity="center"
                         android:orientation="horizontal">
 
                         <com.google.android.material.button.MaterialButton
-                            android:id="@+id/nativeHostPrimaryAction"
+                            android:id="@+id/nativeHostErrorPrimaryAction"
                             style="@style/Widget.MaterialComponents.Button"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="@string/native_host_empty_action"
-                            android:textAllCaps="false"
-                            app:backgroundTint="@color/nativeHostAccent"
-                            app:cornerRadius="22dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/nativeHostSecondaryAction"
-                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="10dp"
-                            android:layout_weight="1"
-                            android:text="@string/native_host_secondary_action_manage"
-                            android:textAllCaps="false"
-                            android:textColor="@color/nativeHostTextPrimary"
-                            app:cornerRadius="22dp"
-                            app:strokeColor="@color/nativeHostDividerStrong" />
-                    </LinearLayout>
-                </LinearLayout>
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
-        <FrameLayout
-            android:id="@+id/nativeHostWorkspaceFrame"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginStart="16dp"
-            android:layout_marginTop="14dp"
-            android:layout_marginEnd="16dp"
-            android:layout_marginBottom="24dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_native_host_surface"
-            android:elevation="6dp"
-            android:outlineProvider="background">
-
-            <WebView
-                android:id="@+id/nativeHostWebView"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@color/nativeHostWebSurface"
-                android:visibility="gone" />
-
-            <androidx.core.widget.NestedScrollView
-                android:id="@+id/nativeHostEmptyState"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:background="@drawable/bg_native_host_workspace_placeholder"
-                android:fillViewport="true"
-                android:scrollbars="none">
-
-                <LinearLayout
-                    android:id="@+id/nativeHostEmptyStateContent"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:orientation="vertical"
-                    android:paddingStart="24dp"
-                    android:paddingTop="24dp"
-                    android:paddingEnd="24dp"
-                    android:paddingBottom="28dp">
-
-                    <LinearLayout
-                        android:id="@+id/nativeHostWorkspaceMessageGroup"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:gravity="start"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:id="@+id/nativeHostWorkspaceMessageEyebrow"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:background="@drawable/bg_native_host_state_chip"
-                            android:paddingStart="12dp"
-                            android:paddingTop="6dp"
-                            android:paddingEnd="12dp"
-                            android:paddingBottom="6dp"
-                            android:text="@string/native_host_workspace_preview_eyebrow"
-                            android:textColor="@color/nativeHostChipActiveText"
-                            android:textSize="12sp"
-                            android:textStyle="bold" />
-
-                        <ImageView
-                            android:id="@+id/nativeHostWorkspaceIllustration"
-                            android:layout_width="72dp"
-                            android:layout_height="72dp"
-                            android:layout_marginTop="18dp"
-                            android:alpha="0.92"
-                            android:contentDescription="@string/app_name"
-                            android:src="@drawable/splashscreen_logo" />
-
-                        <LinearLayout
-                            android:id="@+id/nativeHostWelcomeSceneCard"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="18dp"
-                            android:background="@drawable/bg_native_host_scene"
-                            android:orientation="vertical"
-                            android:padding="18dp"
-                            android:visibility="gone">
-
-                            <TextView
-                                android:id="@+id/nativeHostWelcomeSceneEyebrow"
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:background="@drawable/bg_native_host_badge"
-                                android:paddingStart="12dp"
-                                android:paddingTop="6dp"
-                                android:paddingEnd="12dp"
-                                android:paddingBottom="6dp"
-                                android:text="@string/native_host_welcome_scene_eyebrow"
-                                android:textColor="@color/nativeHostHeroBadgeText"
-                                android:textSize="11sp"
-                                android:textStyle="bold" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="16dp"
-                                android:baselineAligned="false"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <LinearLayout
-                                    android:layout_width="0dp"
-                                    android:layout_height="140dp"
-                                    android:layout_weight="1"
-                                    android:background="@drawable/bg_native_host_scene_panel"
-                                    android:elevation="2dp"
-                                    android:orientation="vertical"
-                                    android:padding="14dp">
-
-                                    <LinearLayout
-                                        android:layout_width="match_parent"
-                                        android:layout_height="wrap_content"
-                                        android:gravity="center_vertical"
-                                        android:orientation="horizontal">
-
-                                        <ImageView
-                                            android:layout_width="18dp"
-                                            android:layout_height="18dp"
-                                            android:contentDescription="@string/app_name"
-                                            android:src="@drawable/splashscreen_logo" />
-
-                                        <TextView
-                                            android:layout_width="wrap_content"
-                                            android:layout_height="wrap_content"
-                                            android:layout_marginStart="8dp"
-                                            android:text="@string/native_host_welcome_scene_desktop"
-                                            android:textColor="@color/nativeHostTextPrimary"
-                                            android:textSize="11sp"
-                                            android:textStyle="bold" />
-                                    </LinearLayout>
-
-                                    <View
-                                        android:layout_width="match_parent"
-                                        android:layout_height="10dp"
-                                        android:layout_marginTop="14dp"
-                                        android:background="@color/nativeHostAccentMuted" />
-
-                                    <View
-                                        android:layout_width="76dp"
-                                        android:layout_height="10dp"
-                                        android:layout_marginTop="10dp"
-                                        android:background="@color/nativeHostSurfaceAlt" />
-
-                                    <LinearLayout
-                                        android:layout_width="match_parent"
-                                        android:layout_height="0dp"
-                                        android:layout_marginTop="14dp"
-                                        android:layout_weight="1"
-                                        android:background="@color/nativeHostWebSurface"
-                                        android:orientation="vertical"
-                                        android:padding="10dp">
-
-                                        <View
-                                            android:layout_width="match_parent"
-                                            android:layout_height="8dp"
-                                            android:background="@color/nativeHostAccentMuted" />
-
-                                        <View
-                                            android:layout_width="match_parent"
-                                            android:layout_height="8dp"
-                                            android:layout_marginTop="8dp"
-                                            android:background="@color/nativeHostSurfaceAlt" />
-
-                                        <View
-                                            android:layout_width="58dp"
-                                            android:layout_height="8dp"
-                                            android:layout_marginTop="8dp"
-                                            android:background="@color/nativeHostSurfaceAlt" />
-                                    </LinearLayout>
-                                </LinearLayout>
-
-                                <FrameLayout
-                                    android:layout_width="52dp"
-                                    android:layout_height="52dp"
-                                    android:layout_marginStart="10dp"
-                                    android:layout_marginEnd="10dp"
-                                    android:background="@drawable/bg_native_host_scene_badge">
-
-                                    <ImageView
-                                        android:layout_width="24dp"
-                                        android:layout_height="24dp"
-                                        android:layout_gravity="center"
-                                        android:contentDescription="@string/native_host_empty_action_start"
-                                        android:src="@drawable/ic_native_host_scan"
-                                        android:tint="@android:color/white" />
-                                </FrameLayout>
-
-                                <LinearLayout
-                                    android:layout_width="92dp"
-                                    android:layout_height="160dp"
-                                    android:background="@drawable/bg_native_host_scene_panel"
-                                    android:elevation="4dp"
-                                    android:orientation="vertical"
-                                    android:padding="12dp">
-
-                                    <TextView
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:text="@string/native_host_welcome_scene_phone"
-                                        android:textColor="@color/nativeHostTextPrimary"
-                                        android:textSize="11sp"
-                                        android:textStyle="bold" />
-
-                                    <View
-                                        android:layout_width="match_parent"
-                                        android:layout_height="1dp"
-                                        android:layout_marginTop="10dp"
-                                        android:background="@color/nativeHostDivider" />
-
-                                    <LinearLayout
-                                        android:layout_width="match_parent"
-                                        android:layout_height="0dp"
-                                        android:layout_marginTop="12dp"
-                                        android:layout_weight="1"
-                                        android:background="@color/nativeHostWebSurface"
-                                        android:gravity="center"
-                                        android:orientation="vertical"
-                                        android:padding="10dp">
-
-                                        <ImageView
-                                            android:layout_width="24dp"
-                                            android:layout_height="24dp"
-                                            android:contentDescription="@string/app_name"
-                                            android:src="@drawable/splashscreen_logo" />
-
-                                        <View
-                                            android:layout_width="match_parent"
-                                            android:layout_height="8dp"
-                                            android:layout_marginTop="12dp"
-                                            android:background="@color/nativeHostAccentMuted" />
-
-                                        <View
-                                            android:layout_width="42dp"
-                                            android:layout_height="8dp"
-                                            android:layout_marginTop="8dp"
-                                            android:background="@color/nativeHostSurfaceAlt" />
-                                    </LinearLayout>
-                                </LinearLayout>
-                            </LinearLayout>
-
-                            <TextView
-                                android:id="@+id/nativeHostWelcomeSceneCaption"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="14dp"
-                                android:text="@string/native_host_welcome_scene_caption"
-                                android:textColor="@color/nativeHostTextSecondary"
-                                android:textSize="12sp" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/nativeHostWorkspaceEmptyTitle"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="18dp"
-                            android:gravity="start"
-                            android:text="@string/native_host_workspace_preview_title"
-                            android:textColor="@color/nativeHostTextPrimary"
-                            android:textSize="22sp"
-                            android:textStyle="bold" />
-
-                        <TextView
-                            android:id="@+id/nativeHostWorkspaceEmptyBody"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:gravity="start"
-                            android:lineSpacingExtra="3dp"
-                            android:text="@string/native_host_workspace_preview_body"
-                            android:textColor="@color/nativeHostTextSecondary"
-                            android:textSize="14sp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/nativeHostWelcomePrimaryAction"
-                            style="@style/Widget.MaterialComponents.Button"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="18dp"
-                            android:minHeight="56dp"
-                            android:text="@string/native_host_empty_action_start"
+                            android:minWidth="0dp"
                             android:textAllCaps="false"
-                            android:textColor="@android:color/white"
-                            android:visibility="gone"
                             app:backgroundTint="@color/nativeHostAccent"
                             app:cornerRadius="20dp"
-                            app:icon="@drawable/ic_native_host_scan"
-                            app:iconGravity="textStart"
-                            app:iconPadding="8dp"
-                            app:iconTint="@android:color/white"
-                            app:rippleColor="@color/nativeHostAccentMuted"
-                            app:strokeWidth="0dp" />
-
-                        <LinearLayout
-                            android:id="@+id/nativeHostWelcomeGuideCard"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="18dp"
-                            android:background="@drawable/bg_native_host_subtle"
-                            android:orientation="vertical"
-                            android:padding="18dp"
-                            android:visibility="gone">
-
-                            <TextView
-                                android:id="@+id/nativeHostWelcomeGuideTitle"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:text="@string/native_host_welcome_guide_title"
-                                android:textColor="@color/nativeHostTextPrimary"
-                                android:textSize="13sp"
-                                android:textStyle="bold" />
-
-                            <TextView
-                                android:id="@+id/nativeHostWelcomeGuideBody"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="8dp"
-                                android:lineSpacingExtra="3dp"
-                                android:text="@string/native_host_welcome_guide_body"
-                                android:textColor="@color/nativeHostTextSecondary"
-                                android:textSize="12sp" />
-                        </LinearLayout>
-                    </LinearLayout>
-
-                    <LinearLayout
-                        android:id="@+id/nativeHostRecentSessionsSection"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:orientation="vertical"
-                        android:visibility="gone">
-
-                        <LinearLayout
-                            android:id="@+id/nativeHostRecentSessionsHeader"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:gravity="center_vertical"
-                            android:orientation="horizontal">
-
-                            <TextView
-                                android:id="@+id/nativeHostRecentSessionsTitle"
-                                android:layout_width="0dp"
-                                android:layout_height="wrap_content"
-                                android:layout_weight="1"
-                                android:text="@string/native_host_recent_sessions_title"
-                                android:textColor="@color/nativeHostTextSecondary"
-                                android:textSize="13sp"
-                                android:textStyle="bold" />
-
-                            <com.google.android.material.button.MaterialButton
-                                android:id="@+id/nativeHostSettingsButton"
-                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                                android:layout_width="40dp"
-                                android:layout_height="40dp"
-                                android:contentDescription="@string/native_host_settings_action"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                android:minWidth="0dp"
-                                android:padding="0dp"
-                                app:backgroundTint="@color/nativeHostSurface"
-                                app:cornerRadius="20dp"
-                                app:icon="@android:drawable/ic_menu_manage"
-                                app:iconGravity="textStart"
-                                app:iconPadding="0dp"
-                                app:iconTint="@color/nativeHostTextSecondary"
-                                app:rippleColor="@color/nativeHostAccentMuted"
-                                app:strokeColor="@color/nativeHostDivider"
-                                app:strokeWidth="1dp" />
-                        </LinearLayout>
-
-                        <TextView
-                            android:id="@+id/nativeHostRecentSessionsBody"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="4dp"
-                            android:text="@string/native_host_recent_sessions_body"
-                            android:textColor="@color/nativeHostTextSecondary"
-                            android:textSize="12sp" />
-
-                        <LinearLayout
-                            android:id="@+id/nativeHostRecentSessionsList"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:orientation="vertical" />
+                            tools:text="Retry" />
 
                         <com.google.android.material.button.MaterialButton
-                            android:id="@+id/nativeHostConnectionButton"
-                            style="@style/Widget.MaterialComponents.Button"
-                            android:layout_width="match_parent"
+                            android:id="@+id/nativeHostErrorSecondaryAction"
+                            style="@style/Widget.MaterialComponents.Button.TextButton"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="14dp"
-                            android:minHeight="56dp"
-                            android:text="@string/native_host_empty_action"
+                            android:layout_marginStart="8dp"
+                            android:minWidth="0dp"
+                            android:text="@string/native_host_secondary_action_manage"
                             android:textAllCaps="false"
-                            android:textColor="@android:color/white"
-                            app:backgroundTint="@color/nativeHostAccent"
-                            app:cornerRadius="20dp"
-                            app:icon="@drawable/ic_native_host_scan"
-                            app:iconGravity="textStart"
-                            app:iconPadding="8dp"
-                            app:iconTint="@android:color/white"
-                            app:rippleColor="@color/nativeHostAccentMuted"
-                            app:strokeWidth="0dp" />
+                            android:textColor="@color/nativeHostTextSecondary" />
                     </LinearLayout>
                 </LinearLayout>
-            </androidx.core.widget.NestedScrollView>
-        </FrameLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <TextView
+                android:id="@+id/nativeHostBrandTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/native_host_brand_title"
+                android:textColor="@color/nativeHostTextPrimary"
+                android:textSize="34sp"
+                android:textStyle="bold" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/nativeHostPrimaryScanButton"
+                style="@style/Widget.MaterialComponents.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:minHeight="52dp"
+                android:text="@string/native_host_empty_action_full"
+                android:textAllCaps="false"
+                android:textColor="@android:color/white"
+                app:backgroundTint="@color/nativeHostTextPrimary"
+                app:cornerRadius="26dp"
+                app:icon="@drawable/ic_native_host_scan"
+                app:iconGravity="textStart"
+                app:iconPadding="8dp"
+                app:iconTint="@android:color/white" />
+        </LinearLayout>
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:id="@+id/nativeHostSavedSessionsSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/nativeHostSavedSessionsTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/native_host_saved_sessions_title"
+                    android:textAllCaps="true"
+                    android:textColor="@color/nativeHostTextSecondary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/nativeHostSavedSessionsAction"
+                    style="@style/Widget.MaterialComponents.Button.TextButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="0dp"
+                    android:text="@string/native_host_saved_sessions_action"
+                    android:textAllCaps="false"
+                    android:textColor="@color/nativeHostTextSecondary"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/nativeHostRecentSessionsList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical" />
+        </LinearLayout>
     </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/nativeHostLoadingOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/nativeHostBackground"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            app:indicatorColor="@color/nativeHostTextPrimary" />
+
+        <TextView
+            android:id="@+id/nativeHostLoadingTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textColor="@color/nativeHostTextSecondary"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            tools:text="Opening your workspace" />
+
+        <TextView
+            android:id="@+id/nativeHostLoadingProfile"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="@color/nativeHostTextSecondary"
+            android:textSize="12sp"
+            tools:text="desktop" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/nativeHostReconnectOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/nativeHostBackground"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/native_host_reconnect_title"
+            android:textColor="@color/nativeHostTextPrimary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/nativeHostReconnectStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:textColor="@color/nativeHostTextSecondary"
+            android:textSize="13sp"
+            tools:text="Lost contact with the desktop bridge." />
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            app:indicatorColor="@color/nativeHostTextPrimary" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:gravity="center"
+            android:orientation="horizontal">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/nativeHostReconnectPrimaryAction"
+                style="@style/Widget.MaterialComponents.Button"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:text="@string/native_host_retry_now_action"
+                android:textAllCaps="false"
+                app:backgroundTint="@color/nativeHostTextPrimary"
+                app:cornerRadius="20dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/nativeHostReconnectSecondaryAction"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:minWidth="0dp"
+                android:text="@string/native_host_secondary_action_manage"
+                android:textAllCaps="false"
+                android:textColor="@color/nativeHostTextSecondary" />
+        </LinearLayout>
+    </LinearLayout>
+
 
 </FrameLayout>

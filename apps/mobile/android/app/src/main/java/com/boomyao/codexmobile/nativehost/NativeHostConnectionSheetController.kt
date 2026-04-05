@@ -1,8 +1,6 @@
 package com.boomyao.codexmobile.nativehost
 
 import android.content.Context
-import android.net.Uri
-import android.text.format.DateUtils
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.FrameLayout
@@ -15,7 +13,7 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.progressindicator.LinearProgressIndicator
+import com.google.android.material.progressindicator.CircularProgressIndicator
 
 class NativeHostConnectionSheetController(
     private val context: Context,
@@ -153,15 +151,13 @@ class NativeHostConnectionSheetController(
             val cardView = card as MaterialCardView
             val avatarView = card.findViewById<TextView>(R.id.nativeHostConnectionAvatar)
             val nameView = card.findViewById<TextView>(R.id.nativeHostConnectionName)
-            val endpointView = card.findViewById<TextView>(R.id.nativeHostConnectionEndpoint)
+            val detailView = card.findViewById<TextView>(R.id.nativeHostConnectionDetail)
             val badgeView = card.findViewById<TextView>(R.id.nativeHostConnectionBadge)
-            val modeView = card.findViewById<TextView>(R.id.nativeHostConnectionMode)
             val chevronView = card.findViewById<ImageView>(R.id.nativeHostConnectionChevron)
-            val progressView = card.findViewById<LinearProgressIndicator>(R.id.nativeHostConnectionProgress)
+            val progressView = card.findViewById<CircularProgressIndicator>(R.id.nativeHostConnectionProgress)
 
-            avatarView.text = profileAvatar(profile)
-            nameView.text = displayProfileLabel(profile)
-            endpointView.text = displayProfileDetail(profile)
+            avatarView.text = NativeHostSessionUi.profileAvatar(profile)
+            nameView.text = NativeHostSessionUi.displayProfileLabel(profile)
             val isCurrent = profile.id == activeProfileId
             val isConnected = isCurrent && isConnectedProvider()
             val isConnecting = isCurrent && isLoadingProvider()
@@ -187,20 +183,24 @@ class NativeHostConnectionSheetController(
             } else {
                 badgeView.visibility = View.GONE
             }
-            modeView.text =
+            detailView.text =
                 when {
-                    isConnecting -> describeConnectingStatus(profile)
-                    isErrored -> summarizeWorkspaceError(currentStatusMessageProvider())
-                    else -> describeProfileStatus(profile, isConnected)
+                    isConnecting ->
+                        NativeHostSessionUi.describeConnectingStatus(
+                            context = context,
+                            profile = profile,
+                            statusMessage = currentStatusMessageProvider(),
+                            stage = currentConnectionStageProvider(),
+                        )
+                    isErrored ->
+                        NativeHostSessionUi.summarizeWorkspaceError(
+                            context = context,
+                            message = currentStatusMessageProvider(),
+                        )
+                    else -> NativeHostSessionUi.describeProfileStatus(context, profile, isCurrent)
                 }
-            modeView.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                if (isConnecting || isErrored) 0 else R.drawable.ic_native_host_clock,
-                0,
-                0,
-                0,
-            )
             progressView.visibility = if (isConnecting) View.VISIBLE else View.GONE
-            chevronView.visibility = if (isConnecting) View.GONE else View.VISIBLE
+            chevronView.visibility = if (isConnecting || isConnected) View.GONE else View.VISIBLE
             cardView.strokeWidth =
                 when {
                     isConnecting -> (2 * context.resources.displayMetrics.density).toInt()
@@ -242,89 +242,25 @@ class NativeHostConnectionSheetController(
         }
     }
 
-    fun profileAvatar(profile: BridgeProfile): String {
-        val tokens =
-            displayProfileLabel(profile)
-                .split('-', '_', '.', ' ')
-                .map(String::trim)
-                .filter(String::isNotEmpty)
-        val preferredToken = tokens.lastOrNull() ?: displayProfileLabel(profile)
-        return preferredToken.firstOrNull()?.uppercaseChar()?.toString() ?: "C"
-    }
-
     fun displayProfileLabel(profile: BridgeProfile): String {
-        val normalizedEndpoint = BridgeApi.normalizeEndpoint(profile.serverEndpoint)
-        val rawName = profile.name.trim()
-        if (rawName.isNotEmpty() && rawName != normalizedEndpoint && !rawName.startsWith("http")) {
-            val candidate =
-                if ('.' in rawName && ' ' !in rawName) {
-                    rawName.substringBefore('.')
-                } else {
-                    rawName
-                }
-            return compactLabel(candidate)
-        }
-        val host = runCatching { Uri.parse(normalizedEndpoint).host.orEmpty() }.getOrDefault("").trim()
-        val candidate =
-            host.substringBefore('.').ifBlank {
-                normalizedEndpoint
-                    .removePrefix("https://")
-                    .removePrefix("http://")
-                    .removePrefix("ws://")
-                    .removePrefix("wss://")
-            }
-        return compactLabel(candidate)
+        return NativeHostSessionUi.displayProfileLabel(profile)
     }
 
     fun displayProfileDetail(profile: BridgeProfile): String {
-        val normalizedEndpoint = BridgeApi.normalizeEndpoint(profile.serverEndpoint)
-        val uri = runCatching { Uri.parse(normalizedEndpoint) }.getOrNull()
-        val host = uri?.host.orEmpty().trim()
-        val portSuffix = if ((uri?.port ?: -1) > 0) ":${uri?.port}" else ""
-        if (host.isNotEmpty()) {
-            val remainder = host.substringAfter('.', "")
-            val candidate = if (remainder.isNotBlank()) remainder else host
-            return compactLabel(candidate + portSuffix, maxLength = 28)
-        }
-        return compactLabel(
-            normalizedEndpoint
-                .removePrefix("https://")
-                .removePrefix("http://")
-                .removePrefix("ws://")
-                .removePrefix("wss://"),
-            maxLength = 28,
-        )
+        return NativeHostSessionUi.displayProfileDetail(profile)
     }
 
     fun describeProfileStatus(profile: BridgeProfile, isCurrent: Boolean): String {
-        val lastUsedAt = profile.lastUsedAtMillis
-        if (lastUsedAt != null) {
-            val relativeTime =
-                DateUtils.getRelativeTimeSpanString(
-                    lastUsedAt,
-                    System.currentTimeMillis(),
-                    DateUtils.MINUTE_IN_MILLIS,
-                    DateUtils.FORMAT_ABBREV_RELATIVE,
-                ).toString()
-            return context.getString(R.string.native_host_sheet_connection_last_used, relativeTime)
-        }
-        return context.getString(
-            if (isCurrent) {
-                R.string.native_host_sheet_connection_ready_now
-            } else {
-                R.string.native_host_sheet_connection_saved_status
-            },
-        )
+        return NativeHostSessionUi.describeProfileStatus(context, profile, isCurrent)
     }
 
     fun describeConnectingStatus(profile: BridgeProfile): String {
-        return currentStatusMessageProvider().ifBlank {
-            when (currentConnectionStageProvider()) {
-                NativeHostConnectionStage.PAYLOAD_RECEIVED -> context.getString(R.string.native_host_status_payload_received)
-                NativeHostConnectionStage.PAIRING_DEVICE -> context.getString(R.string.native_host_status_pairing_device)
-                NativeHostConnectionStage.OPENING_WORKSPACE, null -> context.getString(R.string.native_host_status_opening_workspace)
-            }
-        }.ifBlank { displayProfileDetail(profile) }
+        return NativeHostSessionUi.describeConnectingStatus(
+            context = context,
+            profile = profile,
+            statusMessage = currentStatusMessageProvider(),
+            stage = currentConnectionStageProvider(),
+        )
     }
 
     private fun connectionMetadataText(profile: BridgeProfile): String {
@@ -350,29 +286,8 @@ class NativeHostConnectionSheetController(
             .show()
     }
 
-    private fun compactLabel(value: String, maxLength: Int = 28): String {
-        val trimmed = value.trim()
-        return if (trimmed.length <= maxLength) {
-            trimmed
-        } else {
-            trimmed.take(maxLength - 1).trimEnd() + "…"
-        }
-    }
-
     private fun summarizeWorkspaceError(message: String): String {
-        val normalized = message.trim()
-        return when {
-            normalized.contains("invalid key", ignoreCase = true) ||
-                normalized.contains("not valid", ignoreCase = true) ||
-                normalized.contains("fresh enrollment qr", ignoreCase = true) ||
-                normalized.contains("re-enrolled", ignoreCase = true) ->
-                context.getString(R.string.native_host_error_secure_link_expired)
-            normalized.contains("expired", ignoreCase = true) ->
-                "This setup code expired before the workspace opened."
-            normalized.isBlank() ->
-                context.getString(R.string.native_host_workspace_error_body)
-            else -> compactLabel(normalized, maxLength = 90)
-        }
+        return NativeHostSessionUi.summarizeWorkspaceError(context, message)
     }
 
     private fun applyChipTone(view: TextView, tone: ChipTone) {

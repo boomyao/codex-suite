@@ -14,21 +14,11 @@ object BridgeApi {
         val errorMessage: String? = null,
     )
 
-    fun normalizeEndpoint(value: String): String = value.trim().trimEnd('/')
+    fun normalizeEndpoint(value: String): String = com.boomyao.codexmobile.shared.BridgeEndpoint.normalizeEndpoint(value)
 
-    fun deriveServerHttpBaseUrl(endpoint: String): String {
-        val normalized = normalizeEndpoint(endpoint)
-        return when {
-            normalized.startsWith("ws://") -> "http://${normalized.removePrefix("ws://")}"
-            normalized.startsWith("wss://") -> "https://${normalized.removePrefix("wss://")}"
-            normalized.startsWith("http://") || normalized.startsWith("https://") -> normalized
-            else -> "http://$normalized"
-        }
-    }
+    fun deriveServerHttpBaseUrl(endpoint: String): String = com.boomyao.codexmobile.shared.BridgeEndpoint.deriveServerHttpBaseUrl(endpoint)
 
-    fun buildRemoteShellUrlFromBaseUrl(baseUrl: String): String {
-        return "${normalizeEndpoint(baseUrl)}/ui/index.html"
-    }
+    fun buildRemoteShellUrlFromBaseUrl(baseUrl: String): String = com.boomyao.codexmobile.shared.BridgeEndpoint.buildRemoteShellUrlFromBaseUrl(baseUrl)
 
     fun fetchConnectionTargetByBaseUrl(
         baseUrl: String,
