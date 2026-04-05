@@ -19,6 +19,7 @@ const (
 	ExposureModeLocal   = "local"
 	ExposureModeTunnel  = "tunnel"
 	ExposureModeTailnet = "tailnet"
+	ExposureModeLibp2p  = "libp2p"
 
 	AuthModeNone        = "none"
 	AuthModeDeviceToken = "device-token"
@@ -48,6 +49,7 @@ type ExposureConfig struct {
 	AutoStart bool          `json:"autoStart"`
 	Tunnel    TunnelConfig  `json:"tunnel"`
 	Tailnet   TailnetConfig `json:"tailnet"`
+	Libp2p    Libp2pConfig  `json:"libp2p"`
 }
 
 type TunnelConfig struct {
@@ -73,6 +75,14 @@ type TailnetConfig struct {
 	MobileOAuthClientSecret string   `json:"mobileOAuthClientSecret"`
 	MobileOAuthTailnet      string   `json:"mobileOAuthTailnet"`
 	MobileOAuthTags         []string `json:"mobileOAuthTags"`
+}
+
+type Libp2pConfig struct {
+	ListenAddrs    []string `json:"listenAddrs"`
+	BootstrapPeers []string `json:"bootstrapPeers"`
+	PrivateKeyPath string   `json:"privateKeyPath"`
+	EnableRelay    bool     `json:"enableRelay"`
+	EnableMDNS     bool     `json:"enableMdns"`
 }
 
 type AuthConfig struct {
@@ -135,6 +145,13 @@ func DefaultConfig() Config {
 				MobileOAuthClientSecret: "",
 				MobileOAuthTailnet:      "",
 				MobileOAuthTags:         []string{},
+			},
+			Libp2p: Libp2pConfig{
+				ListenAddrs:    []string{},
+				BootstrapPeers: []string{},
+				PrivateKeyPath: "",
+				EnableRelay:    true,
+				EnableMDNS:     true,
 			},
 		},
 		Auth: AuthConfig{
@@ -258,6 +275,25 @@ func EnvConfig() map[string]any {
 	if len(tailnetCfg) > 0 {
 		exposureCfg["tailnet"] = tailnetCfg
 	}
+	libp2pEnvCfg := map[string]any{}
+	if value := envString("CODEX_EXPOSURE_LIBP2P_LISTEN_ADDRS"); value != "" {
+		libp2pEnvCfg["listenAddrs"] = normalizeStringArray(value)
+	}
+	if value := envString("CODEX_EXPOSURE_LIBP2P_BOOTSTRAP_PEERS"); value != "" {
+		libp2pEnvCfg["bootstrapPeers"] = normalizeStringArray(value)
+	}
+	if value := envString("CODEX_EXPOSURE_LIBP2P_PRIVATE_KEY_PATH"); value != "" {
+		libp2pEnvCfg["privateKeyPath"] = value
+	}
+	if value := envBool("CODEX_EXPOSURE_LIBP2P_ENABLE_RELAY"); value != nil {
+		libp2pEnvCfg["enableRelay"] = *value
+	}
+	if value := envBool("CODEX_EXPOSURE_LIBP2P_ENABLE_MDNS"); value != nil {
+		libp2pEnvCfg["enableMdns"] = *value
+	}
+	if len(libp2pEnvCfg) > 0 {
+		exposureCfg["libp2p"] = libp2pEnvCfg
+	}
 
 	if value := envString("CODEX_AUTH_MODE"); value != "" {
 		authCfg["mode"] = value
@@ -346,6 +382,13 @@ func ConfigToMap(cfg Config) map[string]any {
 				"mobileOAuthClientSecret": cfg.Exposure.Tailnet.MobileOAuthClientSecret,
 				"mobileOAuthTailnet":      cfg.Exposure.Tailnet.MobileOAuthTailnet,
 				"mobileOAuthTags":         append([]string{}, cfg.Exposure.Tailnet.MobileOAuthTags...),
+			},
+			"libp2p": map[string]any{
+				"listenAddrs":    append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
+				"bootstrapPeers": append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
+				"privateKeyPath": cfg.Exposure.Libp2p.PrivateKeyPath,
+				"enableRelay":    cfg.Exposure.Libp2p.EnableRelay,
+				"enableMdns":     cfg.Exposure.Libp2p.EnableMDNS,
 			},
 		},
 		"auth": map[string]any{
@@ -461,6 +504,22 @@ func NormalizeConfig(input map[string]any) (Config, error) {
 	if value, exists := tailnetCfg["mobileOAuthTags"]; exists {
 		cfg.Exposure.Tailnet.MobileOAuthTags = normalizeCSVStringArray(value)
 	}
+	libp2pCfg := mapValue(exposureCfg, "libp2p")
+	if value, exists := libp2pCfg["listenAddrs"]; exists {
+		cfg.Exposure.Libp2p.ListenAddrs = normalizeStringArray(value)
+	}
+	if value, exists := libp2pCfg["bootstrapPeers"]; exists {
+		cfg.Exposure.Libp2p.BootstrapPeers = normalizeStringArray(value)
+	}
+	if value, ok := stringValue(libp2pCfg, "privateKeyPath"); ok {
+		cfg.Exposure.Libp2p.PrivateKeyPath = value
+	}
+	if value, ok := libp2pCfg["enableRelay"].(bool); ok {
+		cfg.Exposure.Libp2p.EnableRelay = value
+	}
+	if value, ok := libp2pCfg["enableMdns"].(bool); ok {
+		cfg.Exposure.Libp2p.EnableMDNS = value
+	}
 
 	authCfg := mapValue(input, "auth")
 	if value, ok := stringValue(authCfg, "mode"); ok && value != "" {
@@ -568,7 +627,7 @@ func validateConfig(cfg Config) error {
 	}
 
 	switch cfg.Exposure.Mode {
-	case ExposureModeNone, ExposureModeLocal, ExposureModeTunnel, ExposureModeTailnet:
+	case ExposureModeNone, ExposureModeLocal, ExposureModeTunnel, ExposureModeTailnet, ExposureModeLibp2p:
 	default:
 		return fmt.Errorf("unsupported exposure.mode %q", cfg.Exposure.Mode)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/boomyao/codex-bridge/internal/bridge"
 	"github.com/boomyao/codex-bridge/internal/config"
 	"github.com/boomyao/codex-bridge/internal/exposure"
+	exposurelibp2p "github.com/boomyao/codex-bridge/internal/exposure/libp2p"
 	exposurelocal "github.com/boomyao/codex-bridge/internal/exposure/local"
 	exposurenoop "github.com/boomyao/codex-bridge/internal/exposure/noop"
 	exposuretailnet "github.com/boomyao/codex-bridge/internal/exposure/tailnet"
@@ -210,7 +211,7 @@ func parseOptions(name string, args []string) (commandOptions, error) {
 	flagSet.Var(&options.autoRestart, "auto-restart", "enable managed runtime restart")
 	flagSet.Var(&options.noAutoRestart, "no-auto-restart", "disable managed runtime restart")
 	flagSet.IntVar(&options.restartDelayMS, "restart-delay-ms", 0, "restart delay in milliseconds")
-	flagSet.StringVar(&options.exposureMode, "exposure-mode", "", "exposure mode: none, local, tunnel, or tailnet")
+	flagSet.StringVar(&options.exposureMode, "exposure-mode", "", "exposure mode: none, local, tunnel, tailnet, or libp2p")
 	flagSet.Var(&options.exposureAutoStart, "exposure-auto-start", "auto start exposure provider")
 	flagSet.StringVar(&options.exposureTunnelSSHBinary, "exposure-tunnel-ssh-binary", "", "tunnel provider ssh binary")
 	flagSet.StringVar(&options.exposureTunnelSSHDestination, "exposure-tunnel-ssh-destination", "", "tunnel provider ssh destination, for example user@example.com")
@@ -1620,6 +1621,15 @@ func buildExposureProvider(cfg config.Config, logger *log.Logger) (exposure.Prov
 			Hostname:        cfg.Exposure.Tailnet.Hostname,
 			AddressStrategy: cfg.Exposure.Tailnet.AddressStrategy,
 			Logger:          logger,
+		}), nil
+	case config.ExposureModeLibp2p:
+		return exposurelibp2p.New(exposurelibp2p.Config{
+			ListenAddrs:    append([]string{}, cfg.Exposure.Libp2p.ListenAddrs...),
+			BootstrapPeers: append([]string{}, cfg.Exposure.Libp2p.BootstrapPeers...),
+			PrivateKeyPath: cfg.Exposure.Libp2p.PrivateKeyPath,
+			EnableRelay:    cfg.Exposure.Libp2p.EnableRelay,
+			EnableMDNS:     cfg.Exposure.Libp2p.EnableMDNS,
+			Logger:         logger,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported exposure mode %q", cfg.Exposure.Mode)

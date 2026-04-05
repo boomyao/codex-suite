@@ -4,6 +4,9 @@ go 1.26.1
 
 require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/libp2p/go-libp2p v0.41.1
+	github.com/libp2p/go-libp2p-kad-dht v0.29.0
+	github.com/multiformats/go-multiaddr v0.14.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/term v0.41.0

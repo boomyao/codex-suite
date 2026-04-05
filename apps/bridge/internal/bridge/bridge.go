@@ -393,6 +393,10 @@ func buildConnectionTarget(bridgeID string, exposureStatus ExposureStatus, info 
 	if exposureHTTPURL != "" {
 		payload["exposureHttpUrl"] = exposureHTTPURL
 	}
+	// Include libp2p peer ID when using libp2p exposure mode
+	if exposureStatus.Mode == "libp2p" && exposureStatus.Session != nil {
+		payload["libp2pPeerId"] = exposureStatus.Session.ID
+	}
 	return payload
 }
 
@@ -401,7 +405,7 @@ func sanitizeAdvertisedWebSocketURL(rawURL string) string {
 	if !ok {
 		return ""
 	}
-	if parsed.Scheme != "ws" && parsed.Scheme != "wss" {
+	if parsed.Scheme != "ws" && parsed.Scheme != "wss" && parsed.Scheme != "libp2p+ws" {
 		return ""
 	}
 	return parsed.String()
@@ -412,7 +416,7 @@ func sanitizeAdvertisedHTTPURL(rawURL string) string {
 	if !ok {
 		return ""
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "libp2p" {
 		return ""
 	}
 	return parsed.String()

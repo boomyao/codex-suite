@@ -102,6 +102,10 @@ func (b *Bridge) buildMobileEnrollmentPayload(
 	if code := strings.TrimSpace(pairingCode); code != "" {
 		payload["pairingCode"] = code
 	}
+	// Include libp2p peer ID for P2P connectivity
+	if peerID := connectionStringValue(connection, "libp2pPeerId"); peerID != "" {
+		payload["libp2pPeerId"] = peerID
+	}
 	return payload, nil
 }
 
