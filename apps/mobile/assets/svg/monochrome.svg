@@ -1,6 +1,14 @@
-<svg width="432" height="432" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="296" y="384" width="192" height="72" transform="rotate(45 392 420)" fill="#354268"/>
-  <rect x="296" y="568" width="192" height="72" transform="rotate(-45 392 604)" fill="#354268"/>
-  <rect x="458" y="476" width="72" height="72" transform="rotate(45 494 512)" fill="#354268"/>
-  <rect x="560" y="600" width="176" height="32" fill="#354268"/>
+<svg width="432" height="432" viewBox="100 100 824 824" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- > terminal prompt -->
+  <path d="M385 420 L480 512 L385 604"
+        stroke="white" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- _ cursor -->
+  <rect x="496" y="560" width="56" height="26" rx="6" fill="white"/>
+
+  <!-- < right side rotated -->
+  <g transform="rotate(-12, 600, 490)">
+    <path d="M648 430 L568 504 L648 578"
+          stroke="white" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
 </svg>

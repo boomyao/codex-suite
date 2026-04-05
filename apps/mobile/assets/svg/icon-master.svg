@@ -1,9 +1,38 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="96" y="96" width="832" height="832" rx="224" fill="#F8FAFD"/>
-  <rect x="96" y="96" width="832" height="832" rx="224" stroke="#D8DFE8" stroke-width="6"/>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0F1A28"/>
+      <stop offset="1" stop-color="#080E16"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="312" y1="312" x2="712" y2="712" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3DA2EA"/>
+      <stop offset="1" stop-color="#2878C8"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="32" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
 
-  <rect x="296" y="384" width="192" height="72" transform="rotate(45 392 420)" fill="#6B7FFF"/>
-  <rect x="296" y="568" width="192" height="72" transform="rotate(-45 392 604)" fill="#2E4CF2"/>
-  <rect x="458" y="476" width="72" height="72" transform="rotate(45 494 512)" fill="#203BC9"/>
-  <rect x="560" y="600" width="176" height="32" fill="#6C7EFF"/>
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- Glow layer -->
+  <rect x="312" y="312" width="400" height="400" rx="80" fill="#2888D0" opacity="0.2" filter="url(#glow)"/>
+
+  <!-- Blue panel -->
+  <rect x="312" y="312" width="400" height="400" rx="80" fill="url(#panel)" opacity="0.85"/>
+
+  <!-- > terminal prompt -->
+  <path d="M385 420 L480 512 L385 604"
+        stroke="#0C1C2E" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- _ cursor -->
+  <rect x="496" y="560" width="56" height="26" rx="6" fill="#0C1C2E"/>
+
+  <!-- < right side rotated -->
+  <g transform="rotate(-12, 600, 490)">
+    <path d="M648 430 L568 504 L648 578"
+          stroke="#0C1C2E" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
 </svg>
